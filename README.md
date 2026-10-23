@@ -87,7 +87,9 @@ POST /api/v1/worker/jobs/{job_id}/fail
 The request shape matches the private worker's `solve_payload` contract.
 `solution_offset` skips earlier candidates and `solution_limit` caps the
 number returned. The API-backed UI requests one candidate per Solve click and
-advances the offset for the next click.
+uses a worker-side `solution_cursor` to resume the same solver generator on the
+next click. The cursor is held in worker memory, so restarting the worker
+starts a new solution sequence.
 Unsupported fields such as `target`, `prescribed_graph`, and `options` are
 rejected with `422 unsupported_solver_input` rather than being queued.
 

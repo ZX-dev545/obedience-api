@@ -143,6 +143,7 @@ def validate_job_request(value: dict[str, Any]) -> None:
         "iteration_limit",
         "solution_offset",
         "solution_limit",
+        "solution_cursor",
     }
     unsupported_fields = sorted(set(value) - supported_fields)
     if unsupported_fields:
@@ -181,3 +182,8 @@ def validate_job_request(value: dict[str, Any]) -> None:
         ):
             requirement = "non-negative" if field == "solution_offset" else "positive"
             raise ValueError(f"{field} must be a {requirement} integer")
+    solution_cursor = value.get("solution_cursor")
+    if solution_cursor is not None and (
+        not isinstance(solution_cursor, str) or not solution_cursor.strip()
+    ):
+        raise ValueError("solution_cursor must be a non-empty string")

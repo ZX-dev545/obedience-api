@@ -16,6 +16,7 @@ import re
 import threading
 import time
 import tkinter as tk
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -1705,7 +1706,7 @@ class PathwaysApp:
         self.palette_labels: dict[str, str] = {}
         self.palette_drag_gate: str | None = None
         self.palette_drag_binding_ids: tuple[str, str] | None = None
-        self.solution_offset = 0
+        self.solution_cursor = uuid.uuid4().hex
         self.solution_window: OutputWindow | None = None
         self.request_in_flight = False
         self._build_ui()
@@ -2725,8 +2726,8 @@ class PathwaysApp:
                 "standard_parts": standard_parts,
                 "imvolution_mode": imvolution_mode,
                 "iteration_limit": 1000,
-                "solution_offset": self.solution_offset,
                 "solution_limit": 1,
+                "solution_cursor": self.solution_cursor,
             })
             status = self.api_client.wait_for_job(job_id)
             if stop_event.is_set():
@@ -2734,8 +2735,6 @@ class PathwaysApp:
             if status.error:
                 raise RuntimeError(status.error)
             solutions = (status.result or {}).get("solutions", [])
-            if solutions:
-                self.solution_offset += 1
             for solution in solutions:
                 if stop_event.is_set():
                     return
@@ -2749,7 +2748,7 @@ class PathwaysApp:
         self.editor_canvas.graph = self.prescribed_graph
         self.editor_canvas.views = {}
         self.sync_terminal_nodes()
-        self.solution_offset = 0
+        self.solution_cursor = uuid.uuid4().hex
         if self.solution_window is not None and not self.solution_window.closed:
             self.solution_window.close()
         self.solution_window = None
