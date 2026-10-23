@@ -134,7 +134,9 @@ The direct adapter claims jobs with PostgreSQL row locking, marks them
 easy to inspect. It requires the Neon URL locally.
 
 For the REST architecture, use `solver_api_worker.py` instead. It calls the
-deployed API and does not need `NAPIQ_DATABASE_URL`:
+deployed API and does not need `NAPIQ_DATABASE_URL`. The API URL defaults to
+`https://obedience-api.vercel.app`; `WORKER_AUTH_TOKEN` is loaded from the
+repository's `.env.local` by default:
 
 ```powershell
 python .\scripts\solver_api_worker.py `
