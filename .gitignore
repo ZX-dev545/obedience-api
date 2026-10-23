@@ -9,3 +9,11 @@ __pycache__/
 .DS_Store
 .vercel
 .env*.local
+scripts/solver_api_worker.py
+
+# Private solver and UI code must not be copied into this public repository.
+pathways.py
+solver_worker.py
+optimal_mapping*.py
+solver_debug*.json
+solver_queue.sqlite3

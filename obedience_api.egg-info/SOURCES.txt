@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+obedience_api.egg-info/PKG-INFO
+obedience_api.egg-info/SOURCES.txt
+obedience_api.egg-info/dependency_links.txt
+obedience_api.egg-info/requires.txt
+obedience_api.egg-info/top_level.txt
+obedience_client/__init__.py
+obedience_client/client.py
+tests/test_client.py
+tests/test_validation.py

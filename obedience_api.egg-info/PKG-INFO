@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: obedience-api
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: psycopg[binary]<4,>=3.2

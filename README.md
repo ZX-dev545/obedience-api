@@ -56,18 +56,98 @@ POST /api/v1/worker/jobs/{job_id}/fail
 {
   "operation": "solve",
   "circuit": {
-    "columns": ["A", "OUT"],
-    "rows": [["0", "123"]]
+    "columns": ["A", "B", "OUT"],
+    "column_kinds": ["input", "input", "output"],
+    "rows": [
+      ["0", "0", "0"],
+      ["0", "1", "0"],
+      ["1", "0", "0"],
+      ["1", "1", "1"]
+    ]
   },
-  "standard_parts": {},
-  "imvolution_mode": "free",
-  "iteration_limit": 1000
+  "standard_parts": {
+    "AND": {
+      "columns": ["A", "B", "AND_out"],
+      "column_kinds": ["input", "input", "output"],
+      "rows": [
+        ["0", "0", "0"],
+        ["1", "0", "0"],
+        ["0", "1", "0"],
+        ["1", "1", "1"]
+      ]
+    }
+  },
+  "imvolution_mode": "no imvolutions",
+  "iteration_limit": 1000,
+  "solution_offset": 0,
+  "solution_limit": 1
 }
 ```
 
 The request shape matches the private worker's `solve_payload` contract.
+`solution_offset` skips earlier candidates and `solution_limit` caps the
+number returned. The API-backed UI requests one candidate per Solve click and
+advances the offset for the next click.
 Unsupported fields such as `target`, `prescribed_graph`, and `options` are
 rejected with `422 unsupported_solver_input` rather than being queued.
+
+## Python client
+
+The repository includes a dependency-free Python client in
+`obedience_client`. Copy the `obedience_client` package into another Python
+project, or install this repository in editable mode while developing:
+
+```powershell
+python -m pip install -e .
+```
+
+Example:
+
+```python
+from obedience_client import ObedienceApiClient
+
+client = ObedienceApiClient(
+    "https://obedience-api.vercel.app",
+    api_key="YOUR_API_KEY",
+)
+job_id = client.submit_job({
+    "operation": "solve",
+    "circuit": {
+        "columns": ["A", "B", "OUT"],
+        "column_kinds": ["input", "input", "output"],
+        "rows": [["0", "0", "0"], ["0", "1", "0"],
+                 ["1", "0", "0"], ["1", "1", "1"]],
+    },
+    "standard_parts": {},
+    "imvolution_mode": "no imvolutions",
+    "iteration_limit": 1000,
+})
+status = client.wait_for_job(job_id)
+print(status.status, status.result, status.error)
+```
+
+To generate a demo key, use `client.generate_api_key()` and save the returned
+value immediately; the API displays it only once.
+
+Runnable example:
+
+```powershell
+$env:OBEDIENCE_API_KEY = "YOUR_API_KEY"
+python .\examples\use_api.py
+```
+
+The example submits the AND-gate payload above and waits for the local solver
+worker to return a result. To generate a new demo key through the public
+endpoint instead, run:
+
+```powershell
+python .\examples\use_api.py --generate-key
+```
+
+The reusable Python client does not accept a Vercel protection bypass. Deploy
+the public API without Vercel Deployment Protection, or expose a public
+production domain for API consumers. Vercel protection bypasses are for
+internal testing only and should not be distributed to library users.
 
 ## Demo job client
 

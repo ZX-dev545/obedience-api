@@ -141,6 +141,8 @@ def validate_job_request(value: dict[str, Any]) -> None:
         "standard_parts",
         "imvolution_mode",
         "iteration_limit",
+        "solution_offset",
+        "solution_limit",
     }
     unsupported_fields = sorted(set(value) - supported_fields)
     if unsupported_fields:
@@ -169,3 +171,13 @@ def validate_job_request(value: dict[str, Any]) -> None:
         or iteration_limit < 1
     ):
         raise ValueError("iteration_limit must be a positive integer")
+    for field in ("solution_offset", "solution_limit"):
+        value_to_validate = value.get(field)
+        if value_to_validate is not None and (
+            isinstance(value_to_validate, bool)
+            or not isinstance(value_to_validate, int)
+            or value_to_validate < 0
+            or (field == "solution_limit" and value_to_validate < 1)
+        ):
+            requirement = "non-negative" if field == "solution_offset" else "positive"
+            raise ValueError(f"{field} must be a {requirement} integer")

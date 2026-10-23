@@ -47,15 +47,33 @@ if ($VercelBypassSecret) {
     $headers["x-vercel-protection-bypass"] = $VercelBypassSecret
 }
 
-$sampleRow = @("0", "123")
+$circuitRows = @()
+$circuitRows += , @("0", "0", "0")
+$circuitRows += , @("0", "1", "0")
+$circuitRows += , @("1", "0", "0")
+$circuitRows += , @("1", "1", "1")
+
+$andRows = @()
+$andRows += , @("0", "0", "0")
+$andRows += , @("1", "0", "0")
+$andRows += , @("0", "1", "0")
+$andRows += , @("1", "1", "1")
+
 $payload = @{
     operation = "solve"
     circuit = @{
-        columns = @("A", "OUT")
-        rows = @(, $sampleRow)
+        columns = @("A", "B", "OUT")
+        column_kinds = @("input", "input", "output")
+        rows = $circuitRows
     }
-    standard_parts = @{}
-    imvolution_mode = "free"
+    standard_parts = @{
+        AND = @{
+            columns = @("A", "B", "AND_out")
+            column_kinds = @("input", "input", "output")
+            rows = $andRows
+        }
+    }
+    imvolution_mode = "no imvolutions"
     iteration_limit = 1000
 } | ConvertTo-Json -Depth 10
 

@@ -6,5 +6,8 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
 ]
 
+[tool.setuptools.packages.find]
+include = ["obedience_client*"]
+
 [tool.vercel]
 entrypoint = "api.index:handler"
