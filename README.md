@@ -18,8 +18,9 @@ The private solver is intentionally not part of this repository. Do not copy
    `api/v1/_common.py`.
 
 The Python files in `api/` use Vercel's file-based
-`BaseHTTPRequestHandler` interface. The dynamic `[job_id].py` filename is a
-Vercel route and is not imported as a Python module.
+`BaseHTTPRequestHandler` interface. The `pyproject.toml` entrypoint points to
+the importable jobs handler; the dynamic `[job_id].py` filename is a Vercel
+route and is not imported as a Python module.
 
 The current API supports:
 
