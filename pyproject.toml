@@ -1,2 +1,2 @@
 [tool.vercel]
-entrypoint = "api.v1.jobs:handler"
+entrypoint = "api.index:handler"
