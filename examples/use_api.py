@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-from obedience_client import ObedienceApiClient, ObedienceApiError
+from obedience_api import ObedienceApiClient, ObedienceApiError
 
 
 DEMO_PAYLOAD = {

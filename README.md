@@ -104,7 +104,7 @@ python -m pip install -e .
 Example:
 
 ```python
-from obedience_client import ObedienceApiClient
+from obedience_api import ObedienceApiClient
 
 client = ObedienceApiClient(
     "https://obedience-api.vercel.app",
@@ -148,6 +148,20 @@ The reusable Python client does not accept a Vercel protection bypass. Deploy
 the public API without Vercel Deployment Protection, or expose a public
 production domain for API consumers. Vercel protection bypasses are for
 internal testing only and should not be distributed to library users.
+
+## API-backed pathway UI
+
+The repository also contains a standalone Tkinter UI clone:
+
+```powershell
+$env:OBEDIENCE_API_KEY = "YOUR_API_KEY"
+python .\examples\pathways_api.py
+```
+
+It imports the public client and non-sensitive data models from
+`obedience_api.py`. It does not import the private
+`pathways.py`, `solver_worker.py`, or solver implementation. Each Solve click
+requests one candidate solution.
 
 ## Demo job client
 

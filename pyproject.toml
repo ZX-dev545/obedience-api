@@ -6,6 +6,9 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
 ]
 
+[tool.setuptools]
+py-modules = ["obedience_api"]
+
 [tool.setuptools.packages.find]
 include = ["obedience_client*"]
 
