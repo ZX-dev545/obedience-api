@@ -1,2 +1,2 @@
 [tool.vercel]
-entrypoint = "api.v1.jobs.[job_id]:app"
+entrypoint = "api.v1.jobs:app"
