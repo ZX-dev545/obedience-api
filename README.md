@@ -17,6 +17,10 @@ The private solver is intentionally not part of this repository. Do not copy
 6. Insert a user and an API-key digest using the same digest algorithm in
    `api/v1/_common.py`.
 
+The repository includes a `pyproject.toml` entrypoint configuration because the
+API handlers use Vercel's custom nested route filenames. This prevents Vercel
+from failing with `PYTHON_ENTRYPOINT_NOT_FOUND` during the build.
+
 The current API supports:
 
 ```text
@@ -61,4 +65,3 @@ anything supplied by the client.
 Install the dependencies with `pip install -r requirements.txt`, then run the
 test suite once tests are added. Vercel supplies the request object and calls
 the exported `handler`/`app` function.
-
