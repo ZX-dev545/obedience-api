@@ -5,6 +5,7 @@ from typing import Any
 
 from ._common import (
     Request,
+    UnsupportedSolverInput,
     authenticate_client,
     connect,
     json_response,
@@ -39,6 +40,11 @@ def handle_request(request: Any) -> tuple[int, dict[str, str], str]:
         finally:
             connection.close()
         return json_response(202, {"job_id": job_id, "status": "queued"})
+    except UnsupportedSolverInput as exc:
+        return json_response(
+            422,
+            {"error": "unsupported_solver_input", "message": str(exc)},
+        )
     except (ValueError, json.JSONDecodeError) as exc:
         return json_response(400, {"error": "invalid_request", "message": str(exc)})
     except Exception:

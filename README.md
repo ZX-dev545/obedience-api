@@ -50,23 +50,20 @@ step is to add a small authenticated worker protocol, then adapt the private
 
 ```json
 {
-  "target": {
+  "operation": "solve",
+  "circuit": {
     "columns": ["A", "OUT"],
     "rows": [["0", "123"]]
   },
-  "prescribed_graph": {
-    "nodes": [],
-    "edges": []
-  },
-  "options": {
-    "imvolution_mode": "free",
-    "iteration_limit": 1000
-  }
+  "standard_parts": {},
+  "imvolution_mode": "free",
+  "iteration_limit": 1000
 }
 ```
 
-The API stores the request as opaque JSON. It does not import or execute
-anything supplied by the client.
+The request shape matches the private worker's `solve_payload` contract.
+Unsupported fields such as `target`, `prescribed_graph`, and `options` are
+rejected with `422 unsupported_solver_input` rather than being queued.
 
 ## Demo job client
 

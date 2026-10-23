@@ -9,6 +9,10 @@ from urllib.parse import parse_qs, urlparse
 import psycopg
 
 
+class UnsupportedSolverInput(ValueError):
+    """Raised when a request cannot be represented by the private solver."""
+
+
 def database_url() -> str:
     value = os.environ.get("NAPIQ_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not value:
@@ -98,20 +102,70 @@ def authenticate_client(request: Any, connection: psycopg.Connection[Any]) -> st
     return str(row[0]) if row else None
 
 
+def _validate_table(value: Any, name: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object")
+    columns = value.get("columns")
+    rows = value.get("rows")
+    if not isinstance(columns, list) or not columns:
+        raise ValueError(f"{name}.columns must be a non-empty list")
+    if any(not isinstance(column, str) or not column.strip() for column in columns):
+        raise ValueError(f"{name}.columns must contain non-empty strings")
+    if len(set(columns)) != len(columns):
+        raise ValueError(f"{name}.columns must be unique")
+    if not isinstance(rows, list):
+        raise ValueError(f"{name}.rows must be a list")
+    width = len(columns)
+    if any(
+        not isinstance(row, list) or len(row) != width
+        for row in rows
+    ):
+        raise ValueError(f"Every {name} row must match {name}.columns")
+    kinds = value.get("column_kinds")
+    if kinds is not None:
+        if not isinstance(kinds, list) or len(kinds) != width:
+            raise ValueError(f"{name}.column_kinds must match {name}.columns")
+        if any(kind not in {"input", "output", "derived"} for kind in kinds):
+            raise UnsupportedSolverInput(
+                f"{name}.column_kinds supports only input, output, and derived"
+            )
+    for key in ("parameter_domains", "parameter_positions"):
+        if key in value and not isinstance(value[key], dict):
+            raise ValueError(f"{name}.{key} must be an object")
+
+
 def validate_job_request(value: dict[str, Any]) -> None:
-    target = value.get("target")
-    if not isinstance(target, dict):
-        raise ValueError("target must be an object")
-    for key in ("columns", "rows"):
-        if not isinstance(target.get(key), list):
-            raise ValueError(f"target.{key} must be a list")
-    if not target["columns"]:
-        raise ValueError("target.columns must not be empty")
-    if any(not isinstance(column, str) or not column for column in target["columns"]):
-        raise ValueError("target.columns must contain non-empty strings")
-    width = len(target["columns"])
-    if any(not isinstance(row, list) or len(row) != width for row in target["rows"]):
-        raise ValueError("Every target row must match target.columns")
-    options = value.get("options", {})
-    if options is not None and not isinstance(options, dict):
-        raise ValueError("options must be an object")
+    supported_fields = {
+        "operation",
+        "circuit",
+        "standard_parts",
+        "imvolution_mode",
+        "iteration_limit",
+    }
+    unsupported_fields = sorted(set(value) - supported_fields)
+    if unsupported_fields:
+        raise UnsupportedSolverInput(
+            "Unsupported solver input field(s): " + ", ".join(unsupported_fields)
+        )
+    if value.get("operation") != "solve":
+        raise UnsupportedSolverInput("Only the 'solve' operation is supported")
+    _validate_table(value.get("circuit"), "circuit")
+
+    standard_parts = value.get("standard_parts", {})
+    if not isinstance(standard_parts, dict):
+        raise ValueError("standard_parts must be an object")
+    for name, part in standard_parts.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError("standard_parts keys must be non-empty strings")
+        _validate_table(part, f"standard_parts.{name}")
+
+    mode = value.get("imvolution_mode", "free")
+    if not isinstance(mode, str) or not mode:
+        raise ValueError("imvolution_mode must be a non-empty string")
+    iteration_limit = value.get("iteration_limit")
+    if iteration_limit is not None and (
+        isinstance(iteration_limit, bool)
+        or not isinstance(iteration_limit, int)
+        or iteration_limit < 1
+    ):
+        raise ValueError("iteration_limit must be a positive integer")

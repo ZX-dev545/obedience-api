@@ -49,17 +49,14 @@ if ($VercelBypassSecret) {
 
 $sampleRow = @("0", "123")
 $payload = @{
-    target = @{
+    operation = "solve"
+    circuit = @{
         columns = @("A", "OUT")
         rows = @(, $sampleRow)
     }
-    prescribed_graph = @{
-        nodes = @()
-        edges = @()
-    }
-    options = @{
-        iteration_limit = 1000
-    }
+    standard_parts = @{}
+    imvolution_mode = "free"
+    iteration_limit = 1000
 } | ConvertTo-Json -Depth 10
 
 Write-Host "Submitting job..."
