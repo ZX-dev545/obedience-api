@@ -68,6 +68,36 @@ step is to add a small authenticated worker protocol, then adapt the private
 The API stores the request as opaque JSON. It does not import or execute
 anything supplied by the client.
 
+## Demo job client
+
+After generating an API key, submit the sample job and poll its status with
+PowerShell:
+
+```powershell
+.\scripts\submit-demo-job.ps1 `
+  -Domain "https://YOUR-VERCEL-DOMAIN.vercel.app" `
+  -ApiKey "YOUR_API_KEY"
+```
+
+If Vercel Deployment Protection remains enabled, do not commit the bypass
+secret. Save it in the ignored file
+`scripts/.vercel-bypass-secret` (one line, with no quotes), or pass it with
+`-VercelBypassSecret`:
+
+```powershell
+Set-Content `
+  -Path ".\scripts\.vercel-bypass-secret" `
+  -Value "YOUR_VERCEL_BYPASS_SECRET" `
+  -NoNewline
+
+.\scripts\submit-demo-job.ps1 `
+  -Domain "https://YOUR-VERCEL-DOMAIN.vercel.app" `
+  -ApiKey "YOUR_API_KEY"
+```
+
+The script does not store the API key. Jobs remain `queued` until a worker is
+connected to process them.
+
 ## Local validation
 
 Install the dependencies with `pip install -r requirements.txt`, then run the
