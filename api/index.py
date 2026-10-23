@@ -1,7 +1,7 @@
 from http.server import BaseHTTPRequestHandler
 
-from .v1._common import Request, query_parameters, write_response
-from .v1.keys import handle_request as handle_key_request
+from api.v1._common import Request, json_response, query_parameters, write_response
+from api.v1.keys import handle_request as handle_key_request
 
 
 class handler(BaseHTTPRequestHandler):
@@ -17,5 +17,12 @@ class handler(BaseHTTPRequestHandler):
         if self.path.split("?", 1)[0].rstrip("/") != "/api/v1/keys":
             self.send_error(404, "Not found")
             return
-        request = Request(self, query_parameters(self))
-        write_response(self, handle_key_request(request))
+        try:
+            request = Request(self, query_parameters(self))
+            write_response(self, handle_key_request(request))
+        except Exception as exc:
+            print(f"API entrypoint failed: {type(exc).__name__}: {exc}")
+            write_response(
+                self,
+                json_response(500, {"error": "internal_server_error"}),
+            )
