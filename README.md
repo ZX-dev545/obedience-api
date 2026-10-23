@@ -42,9 +42,13 @@ Use an API key as a bearer token:
 Authorization: Bearer <api-key>
 ```
 
-The worker claim/update endpoints are deliberately not exposed yet. The next
-step is to add a small authenticated worker protocol, then adapt the private
-`solver_worker.py` to use it.
+The worker protocol is authenticated with `WORKER_AUTH_TOKEN`:
+
+```text
+POST /api/v1/worker/claim
+POST /api/v1/worker/jobs/{job_id}/complete
+POST /api/v1/worker/jobs/{job_id}/fail
+```
 
 ## Request shape
 
@@ -94,6 +98,51 @@ Set-Content `
 
 The script does not store the API key. Jobs remain `queued` until a worker is
 connected to process them.
+
+## Local solver workers
+
+The private solver remains outside this repository. The local worker adapter
+expects the sibling `solver_worker.py` by default and calls its
+`solve_payload(payload)` function. If `.env.local` exists (for example after
+`vercel env pull .env.local --environment=production`), the worker loads it
+automatically. Otherwise set `NAPIQ_DATABASE_URL` (or `DATABASE_URL`) in the
+shell where the worker runs.
+
+```powershell
+python .\scripts\neon_solver_worker.py --once
+```
+
+Use a different environment file with `--env-file`. Existing environment
+variables take precedence over values in the file.
+
+Run continuously while testing:
+
+```powershell
+python .\scripts\neon_solver_worker.py
+```
+
+To use a different solver location:
+
+```powershell
+python .\scripts\neon_solver_worker.py `
+  --solver-path "C:\path\to\solver_worker.py"
+```
+
+The direct adapter claims jobs with PostgreSQL row locking, marks them
+`running`, calls the private solver, and records either the JSON result as
+`completed` or the exception as `failed`. Use `--once` first so failures are
+easy to inspect. It requires the Neon URL locally.
+
+For the REST architecture, use `solver_api_worker.py` instead. It calls the
+deployed API and does not need `NAPIQ_DATABASE_URL`:
+
+```powershell
+python .\scripts\solver_api_worker.py `
+  --api-url "https://obedience-api.vercel.app" `
+  --solver-path "C:\path\to\solver_worker.py" `
+  --env-file ".\.env.local" `
+  --once
+```
 
 ## Local validation
 
