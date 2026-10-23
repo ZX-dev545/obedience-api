@@ -26,7 +26,13 @@ The current API supports:
 ```text
 POST /api/v1/jobs
 GET  /api/v1/jobs/{job_id}
+POST /api/v1/keys
 ```
+
+The home page provides a public demo button for generating an API key. The
+plaintext key is returned only once; the database stores only its digest. This
+endpoint is intentionally public for the demo and should be protected with
+authentication or a rate limit before production use.
 
 Use an API key as a bearer token:
 

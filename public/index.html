@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Obedience API Demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+        background: #10131a;
+        color: #f5f7fb;
+      }
+      body { margin: 0; }
+      main { max-width: 680px; margin: 12vh auto; padding: 2rem; }
+      .card { background: #191e29; border: 1px solid #30384a; border-radius: 16px; padding: 2rem; }
+      h1 { margin-top: 0; }
+      p { color: #b8c1d4; line-height: 1.6; }
+      button { border: 0; border-radius: 8px; padding: .8rem 1.1rem; background: #7c5cff; color: white; font-weight: 700; cursor: pointer; }
+      button:disabled { cursor: wait; opacity: .65; }
+      code { display: block; overflow-wrap: anywhere; margin: 1rem 0; padding: 1rem; border-radius: 8px; background: #0c0f14; color: #c8f7d2; }
+      [hidden] { display: none; }
+      .warning { font-size: .9rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <h1>Obedience API</h1>
+        <p>Generate a demo API key to submit jobs to the Obedience API.</p>
+        <p class="warning">This key is shown only once. Copy it before leaving this page.</p>
+        <button id="generate" type="button">Generate API key</button>
+        <div id="result" hidden>
+          <p>Your demo API key:</p>
+          <code id="key"></code>
+          <button id="copy" type="button">Copy API key</button>
+        </div>
+        <p id="error" role="alert" hidden></p>
+      </section>
+    </main>
+    <script>
+      const generate = document.querySelector("#generate");
+      const result = document.querySelector("#result");
+      const key = document.querySelector("#key");
+      const copy = document.querySelector("#copy");
+      const error = document.querySelector("#error");
+
+      generate.addEventListener("click", async () => {
+        generate.disabled = true;
+        error.hidden = true;
+        try {
+          const response = await fetch("/api/v1/keys", { method: "POST" });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error || "Unable to generate an API key.");
+          key.textContent = body.api_key;
+          result.hidden = false;
+          generate.hidden = true;
+        } catch (cause) {
+          error.textContent = cause.message;
+          error.hidden = false;
+          generate.disabled = false;
+        }
+      });
+
+      copy.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(key.textContent);
+        copy.textContent = "Copied";
+      });
+    </script>
+  </body>
+</html>
