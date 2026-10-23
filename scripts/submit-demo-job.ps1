@@ -47,12 +47,11 @@ if ($VercelBypassSecret) {
     $headers["x-vercel-protection-bypass"] = $VercelBypassSecret
 }
 
+$sampleRow = @("0", "123")
 $payload = @{
     target = @{
         columns = @("A", "OUT")
-        rows = @(
-            @("0", "123")
-        )
+        rows = @(, $sampleRow)
     }
     prescribed_graph = @{
         nodes = @()
