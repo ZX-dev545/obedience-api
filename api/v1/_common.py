@@ -3,6 +3,8 @@ import hmac
 import json
 import os
 from typing import Any
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
 
 import psycopg
 
@@ -18,14 +20,44 @@ def connect() -> psycopg.Connection[Any]:
     return psycopg.connect(database_url())
 
 
-def json_response(status: int, body: dict[str, Any]) -> tuple[dict[str, str], str]:
+def json_response(
+    status: int, body: dict[str, Any]
+) -> tuple[int, dict[str, str], str]:
     return (
+        status,
         {
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
         },
         json.dumps(body, separators=(",", ":")),
     )
+
+
+def write_response(
+    response: BaseHTTPRequestHandler, result: tuple[int, dict[str, str], str]
+) -> None:
+    status, headers, body = result
+    encoded_body = body.encode("utf-8")
+    response.send_response(status)
+    for name, value in headers.items():
+        response.send_header(name, value)
+    response.send_header("Content-Length", str(len(encoded_body)))
+    response.end_headers()
+    response.wfile.write(encoded_body)
+
+
+class Request:
+    def __init__(self, request: BaseHTTPRequestHandler, query: dict[str, str]):
+        self.method = request.command
+        self.headers = request.headers
+        length = int(request.headers.get("Content-Length", "0"))
+        self.body = request.rfile.read(length)
+        self.query = query
+
+
+def query_parameters(request: BaseHTTPRequestHandler) -> dict[str, str]:
+    parsed = parse_qs(urlparse(request.path).query)
+    return {key: values[-1] for key, values in parsed.items() if values}
 
 
 def request_json(request: Any) -> dict[str, Any]:
@@ -83,4 +115,3 @@ def validate_job_request(value: dict[str, Any]) -> None:
     options = value.get("options", {})
     if options is not None and not isinstance(options, dict):
         raise ValueError("options must be an object")
-

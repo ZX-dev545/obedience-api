@@ -1,17 +1,21 @@
 import json
 import uuid
+from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ._common import (
+    Request,
     authenticate_client,
     connect,
     json_response,
+    query_parameters,
     request_json,
     validate_job_request,
+    write_response,
 )
 
 
-def handler(request: Any) -> tuple[dict[str, str], str]:
+def handle_request(request: Any) -> tuple[int, dict[str, str], str]:
     if request.method != "POST":
         return json_response(405, {"error": "method_not_allowed"})
     try:
@@ -41,5 +45,6 @@ def handler(request: Any) -> tuple[dict[str, str], str]:
         return json_response(500, {"error": "internal_server_error"})
 
 
-app = handler
-
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        write_response(self, handle_request(Request(self, query_parameters(self))))

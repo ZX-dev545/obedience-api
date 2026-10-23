@@ -2,12 +2,13 @@ import hashlib
 import os
 import secrets
 import uuid
+from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from ._common import connect, json_response
+from ._common import Request, connect, json_response, query_parameters, write_response
 
 
-def handler(request: Any) -> tuple[dict[str, str], str]:
+def handle_request(request: Any) -> tuple[int, dict[str, str], str]:
     if request.method != "POST":
         return json_response(405, {"error": "method_not_allowed"})
 
@@ -35,10 +36,13 @@ def handler(request: Any) -> tuple[dict[str, str], str]:
             connection.commit()
         finally:
             connection.close()
-    except Exception:
+    except Exception as exc:
+        print(f"API key generation failed: {type(exc).__name__}: {exc}")
         return json_response(500, {"error": "api_key_generation_failed"})
 
     return json_response(201, {"api_key": api_key})
 
 
-app = handler
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        write_response(self, handle_request(Request(self, query_parameters(self))))

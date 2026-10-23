@@ -17,9 +17,9 @@ The private solver is intentionally not part of this repository. Do not copy
 6. Insert a user and an API-key digest using the same digest algorithm in
    `api/v1/_common.py`.
 
-The repository includes a `pyproject.toml` entrypoint configuration pointing to
-the importable `api.v1.jobs:app` module. The dynamic `[job_id].py` filename is a
-Vercel route, not a valid Python module name.
+The Python files in `api/` use Vercel's file-based
+`BaseHTTPRequestHandler` interface. The dynamic `[job_id].py` filename is a
+Vercel route and is not imported as a Python module.
 
 The current API supports:
 

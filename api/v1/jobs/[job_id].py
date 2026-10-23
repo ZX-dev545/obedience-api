@@ -1,9 +1,17 @@
 from typing import Any
+from http.server import BaseHTTPRequestHandler
 
-from .._common import authenticate_client, connect, json_response
+from .._common import (
+    Request,
+    authenticate_client,
+    connect,
+    json_response,
+    query_parameters,
+    write_response,
+)
 
 
-def handler(request: Any, context: Any) -> tuple[dict[str, str], str]:
+def handle_request(request: Any) -> tuple[int, dict[str, str], str]:
     if request.method != "GET":
         return json_response(405, {"error": "method_not_allowed"})
     job_id = str(request.query.get("job_id", "")).strip()
@@ -42,5 +50,8 @@ def handler(request: Any, context: Any) -> tuple[dict[str, str], str]:
     )
 
 
-app = handler
-
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        query = query_parameters(self)
+        query["job_id"] = self.path.rstrip("/").rsplit("/", 1)[-1]
+        write_response(self, handle_request(Request(self, query)))
