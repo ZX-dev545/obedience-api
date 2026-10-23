@@ -11,7 +11,7 @@ The private solver is intentionally not part of this repository. Do not copy
 
 1. Create a private GitHub repository and publish this folder.
 2. Import the repository into Vercel.
-3. Add a Neon integration or set `DATABASE_URL` in Vercel.
+3. Add a Neon integration or set `NAPIQ_DATABASE_URL`/`DATABASE_URL` in Vercel.
 4. Set `API_KEY_PEPPER` and `WORKER_AUTH_TOKEN` as Vercel environment variables.
 5. Run `migrations/001_initial_schema.sql` against Neon.
 6. Insert a user and an API-key digest using the same digest algorithm in

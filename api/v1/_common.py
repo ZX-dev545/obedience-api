@@ -10,9 +10,9 @@ import psycopg
 
 
 def database_url() -> str:
-    value = os.environ.get("DATABASE_URL")
+    value = os.environ.get("NAPIQ_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if not value:
-        raise RuntimeError("DATABASE_URL is not configured")
+        raise RuntimeError("NAPIQ_DATABASE_URL or DATABASE_URL is not configured")
     return value
 
 
