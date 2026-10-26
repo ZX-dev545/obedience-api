@@ -1,88 +1,102 @@
 """API-backed GUI for prescribing and displaying logic-circuit pathways.
 
-This is a standalone UI clone of ``pathways.py``. It keeps the UI graph and
+This is a standalone UI clone of ``pathways_prod.py``. It keeps the UI graph and
 truth-table presentation models, but submits solver requests through
 ``obedience_api.ObedienceApiClient`` instead of running a local solver.
+The gate-menu rewrite inspector is local-only; the remote solver supports only
+the request fields implemented by its API.
 """
 
 from __future__ import annotations
 
-import csv
 import json
 import os
 import math
 import queue
 import re
-import threading
-import time
-import tkinter as tk
-import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
+import tkinter as tk
+import threading
+import uuid
+from dataclasses import dataclass
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from typing import Callable, Iterable, Sequence
+import tkinter.font as tkfont
+from typing import Callable, Sequence
 
-from obedience_api import (
-    LogicEdge,
-    LogicGraph,
-    LogicNode,
-    LogicPort,
-    ObedienceApiClient,
-    ObedienceApiError,
-    F_STRING_PLACEHOLDER,
-    TruthTable,
+from obedience_api import *
+from regex_cells import (
+    match_regex_pattern,
+    merge_regex_definitions,
+    regex_string_body,
+    render_regex_template,
+    validate_regex_definition_entries,
+    validate_regex_definitions,
+    validate_regex_pattern,
 )
+from regex_rewrite import (
+    RegexRewriteError,
+    RegexRewriteSystem,
+    rewrite_system_from_gate_templates,
+)
+
+PATHWAYS_API_SAVE_ROOT = Path(__file__).with_name("pathways_prod_saves")
+PATHWAYS_API_MENU_DIR = PATHWAYS_API_SAVE_ROOT / "menus"
+PATHWAYS_API_TABLE_DIR = PATHWAYS_API_SAVE_ROOT / "tables"
+PATHWAYS_API_REGEX_DEFINITIONS_PATH = (
+    PATHWAYS_API_SAVE_ROOT / "regex_definitions.json"
+)
+#ObedienceApiClient, ObedienceApiError, LogicEdge, LogicGraph, LogicNode, LogicPort, TruthTable, F_STRING_PLACEHOLDER
 
 # ---------------------------------------------------------------------------
 # UI-independent graph and truth-table data structures
 
-# Keep the placeholder syntax in one place so it can be changed without
-# touching truth-table propagation.
-IS_F_STRING = re.compile(r"^f(['\"])(.*)\1$")
-
-
-def replace_f_string_placeholders(
-    value: str, replace: Callable[[str], str], *, wrap_placeholders: bool = True
-) -> str:
-    """Replace balanced top-level placeholders, including nested f-strings."""
-    result: list[str] = []
-    position = 0
-    while position < len(value):
-        if value[position] != "{":
-            result.append(value[position])
-            position += 1
-            continue
-        depth = 1
-        end = position + 1
-        while end < len(value) and depth:
-            if value[end] == "{":
-                depth += 1
-            elif value[end] == "}":
-                depth -= 1
-            end += 1
-        if depth:
-            result.append(value[position:])
-            break
-        replacement = replace(value[position + 1:end - 1])
-        result.append(
-            "{" + replacement + "}" if wrap_placeholders else replacement
+def fit_treeview_columns(
+    tree: ttk.Treeview,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+) -> None:
+    style = ttk.Style(tree)
+    tree_style = tree.cget("style") or "Treeview"
+    body_font = tkfont.Font(
+        root=tree,
+        font=style.lookup(tree_style, "font") or "TkDefaultFont",
+    )
+    heading_font = tkfont.Font(
+        root=tree,
+        font=style.lookup(f"{tree_style}.Heading", "font") or "TkHeadingFont",
+    )
+    for index, column in enumerate(columns):
+        heading = tree.heading(column, "text") or column
+        width = heading_font.measure(heading)
+        for row in rows:
+            if index < len(row) and row[index] is not None:
+                width = max(width, body_font.measure(str(row[index])))
+        tree.column(
+            column,
+            width=width + 24,
+            minwidth=0,
+            anchor=tk.CENTER,
+            stretch=False,
         )
-        position = end
-    return "".join(result)
 
 
 def render_output_template(
     value: str | None,
     input_columns: Sequence[str | None],
     input_values: Sequence[str | None],
+    *,
+    call_evaluator: Callable[[str], str] | None = None,
 ) -> str | None:
-    """Render a restricted f-string template using the current input values.
-
-    Output cells that do not begin with ``f"`` or ``f'`` remain unchanged.
-    Placeholders use input column names, for example ``f"state={Input A}"``.
-    This deliberately supports substitutions only; arbitrary Python expressions
-    are not evaluated.
-    """
+    """Render a gate output template from input values and captures."""
+    if value is not None and regex_string_body(value) is not None:
+        bindings = {
+            column: "" if input_value is None else str(input_value)
+            for column, input_value in zip(input_columns, input_values)
+            if column is not None
+        }
+        return render_regex_template(
+            value, bindings, call_evaluator=call_evaluator
+        )
     if value is None or len(value) < 3 or value[0].lower() != "f":
         return value
     quote = value[1]
@@ -110,7 +124,20 @@ def template_columns(
 ) -> tuple[str, ...]:
     """Return input-column names referenced by an output template."""
     if value is None or len(value) < 3 or value[0].lower() != "f":
-        return ()
+        body = regex_string_body(value) if value is not None else None
+        if body is None:
+            return ()
+        names = []
+        captures = re.findall(
+            r"(?:\\g<([A-Za-z_]\w*)>|\$\{([A-Za-z_]\w*)\})", body
+        )
+        for capture in captures:
+            name = capture[0] or capture[1]
+            if available_columns is not None and name not in available_columns:
+                continue
+            if name not in names:
+                names.append(name)
+        return tuple(names)
     names = []
     for match in F_STRING_PLACEHOLDER.finditer(value[2:-1]):
         name = match.group(1).strip()
@@ -121,182 +148,6 @@ def template_columns(
         if name not in names:
             names.append(name)
     return tuple(names)
-
-
-def substitute_template_columns(value: str, replacements: tuple[str, ...]) -> str:
-    if value is None or len(value) < 3 or value[0].lower() != "f":
-        return ()
-    content = value[2:-1]
-    iterator = iter(replacements)
-    content = F_STRING_PLACEHOLDER.sub(lambda match: next(iterator), content)
-    return content
-
-
-def substitute_known_template_columns(
-    value: str | None,
-    row: Sequence[str | None],
-    columns: Sequence[str],
-    *,
-    preserve_f_string: bool = False,
-) -> str | None:
-    """Substitute known columns while preserving escaped local wildcards."""
-    if value is None or not IS_F_STRING.match(str(value)):
-        return value
-    values = dict(zip(columns, row))
-
-    def replace(name: str) -> str:
-        name = name.strip()
-        if name.startswith("\\") or name not in values:
-            return "{" + name + "}" if not preserve_f_string else name
-        replacement = "" if values[name] is None else str(values[name])
-        return replacement
-
-    quote = str(value)[1]
-    body = str(value)[2:-1]
-    substituted = replace_f_string_placeholders(
-        body, replace, wrap_placeholders=preserve_f_string
-    )
-    if not preserve_f_string and "\\" in substituted:
-        return str(value)
-    if preserve_f_string:
-        return f"{str(value)[0]}{quote}{substituted}{quote}"
-    return substituted
-
-
-def semantic_state_value(value: str | None) -> str | None:
-    """Return the rendered value used when comparing literal state forms."""
-    if value is None or not IS_F_STRING.match(str(value)):
-        return value
-    text = str(value)
-    body = text[2:-1]
-    placeholders = list(F_STRING_PLACEHOLDER.finditer(body))
-    if any(match.group(1).strip().startswith("\\") for match in placeholders):
-        return value
-    return replace_f_string_placeholders(
-        body,
-        lambda expression: expression.strip(),
-        wrap_placeholders=False,
-    )
-
-
-def semantic_state_key(values: Sequence[str | None]) -> tuple[str | None, ...]:
-    """Build a dictionary key that treats literal f-strings as rendered states."""
-    return tuple(semantic_state_value(value) for value in values)
-
-
-def preferred_state_value(
-    current: str | None, candidate: str | None
-) -> str | None:
-    """Keep the most informative representation of an equivalent state."""
-    if current is None:
-        return candidate
-    if candidate is None:
-        return current
-    current_f_string = IS_F_STRING.match(str(current))
-    candidate_f_string = IS_F_STRING.match(str(candidate))
-    if candidate_f_string and not current_f_string:
-        return candidate
-    if current_f_string and not candidate_f_string:
-        return current
-    if current_f_string and candidate_f_string:
-        current_has_wildcard = "\\" in str(current)
-        candidate_has_wildcard = "\\" in str(candidate)
-        if current_has_wildcard and not candidate_has_wildcard:
-            return candidate
-        if not current_has_wildcard and candidate_has_wildcard:
-            return current
-    return current
-
-
-def match_local_wildcards(
-    pattern: str | None, value: str | None
-) -> dict[str, str] | None:
-    """Match an f-string wildcard pattern against one concrete state."""
-    if pattern is None or value is None:
-        return {} if pattern == value else None
-    pattern_text = str(pattern)
-    value_text = str(value)
-    pattern_match = IS_F_STRING.match(pattern_text)
-    value_match = IS_F_STRING.match(value_text)
-    pattern_body = pattern_match.group(2) if pattern_match else pattern_text
-    value_body = value_match.group(2) if value_match else value_text
-    if value_match:
-        value_body = replace_f_string_placeholders(
-            value_body,
-            lambda expression: (
-                expression.strip()
-                if not expression.strip().startswith("\\")
-                else "{" + expression + "}"
-            ),
-            wrap_placeholders=False,
-        )
-    matches = list(F_STRING_PLACEHOLDER.finditer(pattern_body))
-    wildcard_matches = [
-        match for match in matches if match.group(1).strip().startswith("\\")
-    ]
-    if not wildcard_matches:
-        return {} if pattern_body == value_body else None
-
-    expression = "^"
-    position = 0
-    names: list[str] = []
-    for match in wildcard_matches:
-        expression += re.escape(pattern_body[position:match.start()])
-        name = match.group(1).strip()[1:]
-        names.append(name)
-        expression += "(.*?)"
-        position = match.end()
-    expression += re.escape(pattern_body[position:]) + "$"
-    value_match = re.fullmatch(expression, value_body)
-    if value_match is None:
-        return None
-    bindings: dict[str, str] = {}
-    for name, captured in zip(names, value_match.groups()):
-        if name in bindings and bindings[name] != captured:
-            return None
-        bindings[name] = captured
-    return bindings
-
-
-def substitute_local_wildcards(
-    value: str | None, bindings: dict[str, str]
-) -> str | None:
-    """Render local wildcard placeholders while preserving f-string syntax."""
-    if value is None or not bindings or not IS_F_STRING.match(str(value)):
-        return value
-
-    def replace(expression: str) -> str:
-        expression = expression.strip()
-        if expression.startswith("\\") and expression[1:] in bindings:
-            return bindings[expression[1:]]
-        return expression
-
-    text = str(value)
-    body = replace_f_string_placeholders(text[2:-1], replace)
-    return f"{text[0]}{text[1]}{body}{text[-1]}"
-
-
-def wildcard_specificity(value: str | None) -> tuple[int, int]:
-    """Rank a pattern by literal specificity, preferring more fixed text."""
-    if value is None or not IS_F_STRING.match(str(value)):
-        return (-len(str(value)), 0)
-    body = str(value)[2:-1]
-    placeholders = list(F_STRING_PLACEHOLDER.finditer(body))
-    wildcard_count = sum(
-        match.group(1).strip().startswith("\\") for match in placeholders
-    )
-    literal_length = sum(
-        len(body[start:end])
-        for start, end in [(0, placeholders[0].start())]
-    ) if placeholders else len(body)
-    if placeholders:
-        literal_length += sum(
-            len(body[previous.end():current.start()])
-            for previous, current in zip(placeholders, placeholders[1:])
-        )
-        literal_length += len(body[placeholders[-1].end():])
-    return (-literal_length, wildcard_count)
-
 
 @dataclass
 class UINode:
@@ -318,16 +169,23 @@ class ReadOnlyTable(ttk.Frame):
     def __init__(self, master: tk.Misc, table: TruthTable) -> None:
         super().__init__(master)
         tree = ttk.Treeview(self, show="headings", selectmode="none", height=min(12, max(3, len(table.rows))))
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=tree.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        tree.configure(yscrollcommand=scrollbar.set)
+        horizontal_scrollbar = ttk.Scrollbar(
+            self, orient=tk.HORIZONTAL, command=tree.xview
+        )
+        horizontal_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        tree.configure(
+            yscrollcommand=scrollbar.set,
+            xscrollcommand=horizontal_scrollbar.set,
+        )
         tree["columns"] = table.columns
         for column in table.columns:
             tree.heading(column, text=column)
-            tree.column(column, width=100, anchor=tk.CENTER, stretch=False)
         for row in table.rows:
             tree.insert("", tk.END, values=["" if value is None else value for value in row])
+        fit_treeview_columns(tree, table.columns, table.rows)
 
 
 def show_inspection_dialog(parent: tk.Misc, title: str, item: object,
@@ -427,10 +285,17 @@ class TableEditor(ttk.Frame):
         style.map(style_name, background=[("selected", "#0078d7")], foreground=[("selected", "white")])
         self.tree = ttk.Treeview(self, show="headings", selectmode="browse",
                                  style=style_name, takefocus=True)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.tree.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        horizontal_scrollbar = ttk.Scrollbar(
+            self, orient=tk.HORIZONTAL, command=self.tree.xview
+        )
+        horizontal_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.tree.configure(
+            yscrollcommand=scrollbar.set,
+            xscrollcommand=horizontal_scrollbar.set,
+        )
         self.tree.bind("<Double-1>", self._edit_header_or_cell)
         self.tree.bind("<Button-1>", self._focus_cell, add="+")
         self.tree.bind("<Key>", self._navigate_or_edit)
@@ -478,7 +343,7 @@ class TableEditor(ttk.Frame):
                 heading = f"◇ {heading}"
             self.tree.heading(column, text=heading)
             visible = self.derived_visibility.get(column, True)
-            self.tree.column(column, width=92 if visible else 0, minwidth=0,
+            self.tree.column(column, width=0 if not visible else 1, minwidth=0,
                              anchor=tk.CENTER, stretch=False)
         for row_index, row in enumerate(self.table.rows):
             display_row = list(row)
@@ -490,6 +355,10 @@ class TableEditor(ttk.Frame):
             ):
                 display_row[0] = "Add State"
             self.tree.insert("", tk.END, values=display_row)
+        fit_treeview_columns(self.tree, self.table.columns, self.table.rows)
+        for column in self.table.columns:
+            if not self.derived_visibility.get(column, True):
+                self.tree.column(column, width=0, minwidth=0)
 
     def read_table(self) -> TruthTable:
         rows = [
@@ -499,7 +368,14 @@ class TableEditor(ttk.Frame):
             ]
             for item in self.tree.get_children()
         ]
-        return TruthTable(list(self.tree["columns"]), rows, self.table.column_kinds.copy())
+        return TruthTable(
+            list(self.tree["columns"]),
+            rows,
+            self.table.column_kinds.copy(),
+            self.table.parameter_domains.copy(),
+            self.table.parameter_positions.copy(),
+            self.table.regex_definitions.copy(),
+        )
 
     def _edit_cell(self, event: tk.Event) -> None:
         item = self.tree.identify_row(event.y)
@@ -1361,9 +1237,9 @@ class TimeSeriesTable(ttk.Frame):
         self.table["columns"] = columns
         for column in columns:
             self.table.heading(column, text=column)
-            self.table.column(column, width=120, minwidth=90, anchor=tk.CENTER, stretch=False)
         for row in rows:
             self.table.insert("", tk.END, values=["" if value is None else value for value in row])
+        fit_treeview_columns(self.table, columns, rows)
         self.selected_label.configure(text="Select a time-series row to inspect its propagated values.")
 
     @staticmethod
@@ -1526,6 +1402,17 @@ class OutputWindow(tk.Toplevel):
         self.waiting_for_resume = False
         self.resume_button.configure(state=tk.DISABLED)
         self._update()
+
+    def mark_request_complete(self, has_more: bool) -> None:
+        if self.closed or not self.winfo_exists():
+            return
+        if has_more:
+            self.finished = False
+            self.waiting_for_resume = True
+            self.resume_button.configure(state=tk.NORMAL)
+            self._update()
+        else:
+            self.mark_finished()
 
     def change(self, delta: int) -> None:
         if self.solutions:
@@ -1699,6 +1586,8 @@ class PathwaysApp:
         root.minsize(900, 560)
         self.target_table = TruthTable(["A", "B", "OUT"], [["0", "0", "0"], ["0", "1", "0"], ["1", "0", "0"], ["1", "1", "1"]])
         self.prescribed_graph = LogicGraph()
+        self.regex_definitions: dict[str, str] = {}
+        self.regex_rewrite_system: RegexRewriteSystem | None = None
         self._gate_number = 0
         self.derived_visibility: dict[str, bool] = {}
         self.palette_buttons: dict[str, ttk.Button] = {}
@@ -1716,6 +1605,16 @@ class PathwaysApp:
         top.pack(fill=tk.X)
         ttk.Label(top, text="Pathway designer", font=("Segoe UI", 16, "bold")).pack(side=tk.LEFT)
         ttk.Button(top, text="Solve", command=self.solve).pack(side=tk.RIGHT)
+        ttk.Button(
+            top,
+            text="Rewrite rules",
+            command=self.open_regex_rewrite_editor,
+        ).pack(side=tk.RIGHT, padx=6)
+        ttk.Button(
+            top,
+            text="Regex definitions",
+            command=self.open_regex_definitions_editor,
+        ).pack(side=tk.RIGHT, padx=6)
         ttk.Button(top, text="Reset prescription", command=self.reset).pack(side=tk.RIGHT, padx=6)
         self.status = tk.StringVar(value="Prescription phase: edit the target table and place prescribed gates.")
         ttk.Label(self.root, textvariable=self.status, padding=(8, 0, 8, 8)).pack(anchor=tk.W)
@@ -1755,7 +1654,8 @@ class PathwaysApp:
         palette.pack(fill=tk.X, pady=(6, 0))
         ttk.Button(palette, text="Add gate +", command=self.add_gate_dialog).pack(side=tk.LEFT)
         ttk.Button(palette, text="Save gate menu", command=self.save_gate_menu).pack(side=tk.LEFT, padx=5)
-        ttk.Button(palette, text="Load gate menu", command=self.load_gate_menu).pack(side=tk.LEFT)
+        ttk.Button(palette, text="Load gate menu", command=self.load_gate_menu).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(palette, text="Import menu", command=self.import_gate_menu).pack(side=tk.LEFT)
         ttk.Button(palette, text="Reset view", command=self.editor_canvas.reset_view).pack(side=tk.RIGHT)
         template_bar = ttk.Frame(middle)
         template_bar.pack(fill=tk.X, pady=(4, 0))
@@ -1776,8 +1676,341 @@ class PathwaysApp:
         )
         self.sync_terminal_nodes()
 
+    @staticmethod
+    def _add_regex_definition_row(table: ttk.Treeview) -> None:
+        table.insert("", tk.END, values=("", ""))
+
+    @staticmethod
+    def _edit_regex_definition_cell(
+        table: ttk.Treeview, event: tk.Event
+    ) -> None:
+        row_id = table.identify_row(event.y)
+        column_id = table.identify_column(event.x)
+        if not row_id or column_id not in {"#1", "#2"}:
+            return
+        column_index = int(column_id[1:]) - 1
+        column_name = ("name", "fragment")[column_index]
+        bounds = table.bbox(row_id, column_name)
+        if not bounds:
+            return
+        x, y, width, height = bounds
+        values = list(table.item(row_id, "values"))
+        editor = ttk.Entry(table)
+        editor.place(x=x, y=y, width=width, height=height)
+        editor.insert(0, values[column_index])
+        editor.select_range(0, tk.END)
+        editor.focus_set()
+        finished = False
+
+        def finish(_event: tk.Event | None = None) -> None:
+            nonlocal finished
+            if finished:
+                return
+            finished = True
+            values[column_index] = editor.get().strip()
+            editor.destroy()
+            if not any(value.strip() for value in values):
+                table.delete(row_id)
+                return
+            table.item(row_id, values=values)
+
+        editor.bind("<Return>", finish)
+        editor.bind("<FocusOut>", finish)
+        editor.bind("<Escape>", lambda _event: editor.destroy())
+
+    def open_regex_definitions_editor(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Global regex definitions")
+        dialog.transient(self.root)
+        dialog.geometry("760x560")
+        frame = ttk.Frame(dialog, padding=10)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            frame,
+            text=(
+                "Use identifier keys and raw regex source values without "
+                "r-quote wrappers. Reference definitions with (?&name); "
+                "recursive definitions are supported. Table definitions override "
+                "global definitions. Row captures belong inline to each pattern."
+            ),
+            wraplength=720,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 8))
+        table = ttk.Treeview(
+            frame, columns=("name", "fragment"), show="headings", height=16
+        )
+        table.heading("name", text="Definition")
+        table.heading("fragment", text="Regex fragment")
+        table.column("name", width=150, stretch=False)
+        table.column("fragment", width=520, stretch=True)
+        table.pack(fill=tk.BOTH, expand=True)
+        for name, fragment in self.regex_definitions.items():
+            table.insert("", tk.END, values=(name, fragment))
+        self._add_regex_definition_row(table)
+        table.bind(
+            "<Double-1>",
+            lambda event: self._edit_regex_definition_cell(table, event),
+        )
+        status = tk.StringVar(
+            value=f"Loaded {len(self.regex_definitions)} global definition(s)."
+        )
+        ttk.Label(frame, textvariable=status).pack(anchor=tk.W, pady=(6, 0))
+
+        def parsed_definitions() -> dict[str, str]:
+            definitions: dict[str, str] = {}
+            for item in table.get_children():
+                name, fragment = (
+                    value.strip() for value in table.item(item, "values")
+                )
+                if not name and not fragment:
+                    continue
+                if not name or not fragment:
+                    raise ValueError(
+                        "Each definition needs both a name and a regex fragment."
+                    )
+                if name in definitions:
+                    raise ValueError(f"Duplicate regex definition name: {name!r}.")
+                definitions[name] = fragment
+            validate_regex_definitions(definitions)
+            return definitions
+
+        def import_definitions() -> None:
+            filename = filedialog.askopenfilename(
+                parent=dialog,
+                filetypes=[("Regex definitions", "*.json"), ("All files", "*")],
+            )
+            if not filename:
+                return
+            try:
+                definitions = json.loads(
+                    Path(filename).read_text(encoding="utf-8")
+                )
+                validate_regex_definitions(definitions)
+                table.delete(*table.get_children())
+                for name, fragment in definitions.items():
+                    table.insert("", tk.END, values=(name, fragment))
+                self._add_regex_definition_row(table)
+                status.set(f"Imported {len(definitions)} definition(s).")
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                messagebox.showerror(
+                    "Import regex definitions failed", str(exc), parent=dialog
+                )
+
+        def save_as() -> None:
+            try:
+                definitions = parsed_definitions()
+            except ValueError as exc:
+                messagebox.showerror(
+                    "Invalid regex definitions", str(exc), parent=dialog
+                )
+                return
+            filename = filedialog.asksaveasfilename(
+                parent=dialog,
+                defaultextension=".json",
+                filetypes=[("Regex definitions", "*.json"), ("All files", "*")],
+            )
+            if not filename:
+                return
+            try:
+                Path(filename).write_text(
+                    json.dumps(definitions, indent=2), encoding="utf-8"
+                )
+                status.set(f"Saved definitions to {filename}.")
+            except OSError as exc:
+                messagebox.showerror(
+                    "Save regex definitions failed", str(exc), parent=dialog
+                )
+
+        def apply_definitions() -> None:
+            try:
+                definitions = parsed_definitions()
+                tables = [self.target_editor.get_table()] + [
+                    node.truth_table
+                    for node in self.palette_templates.values()
+                    if node.truth_table is not None
+                ]
+                self._validate_regex_tables(tables, definitions)
+                PATHWAYS_API_REGEX_DEFINITIONS_PATH.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                PATHWAYS_API_REGEX_DEFINITIONS_PATH.write_text(
+                    json.dumps(definitions, indent=2), encoding="utf-8"
+                )
+            except (OSError, ValueError) as exc:
+                messagebox.showerror(
+                    "Apply regex definitions failed", str(exc), parent=dialog
+                )
+                return
+            self.regex_definitions = definitions
+            self.prescribed_graph.regex_definitions = definitions.copy()
+            self._refresh_rewrite_system()
+            status.set(f"Applied and saved {len(definitions)} global definition(s).")
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(
+            buttons,
+            text="Add definition",
+            command=lambda: self._add_regex_definition_row(table),
+        ).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Import", command=import_definitions).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(buttons, text="Save as…", command=save_as).pack(
+            side=tk.LEFT, padx=5
+        )
+        ttk.Button(
+            buttons,
+            text="Validate",
+            command=lambda: self._validate_regex_definition_table(
+                table, status, dialog
+            ),
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            buttons, text="Apply and save", command=apply_definitions
+        ).pack(side=tk.RIGHT)
+
+    @staticmethod
+    def _validate_regex_definition_table(
+        table: ttk.Treeview, status: tk.StringVar, parent: tk.Misc
+    ) -> None:
+        try:
+            definitions: dict[str, str] = {}
+            for item in table.get_children():
+                name, fragment = (
+                    value.strip() for value in table.item(item, "values")
+                )
+                if not name and not fragment:
+                    continue
+                if not name or not fragment:
+                    raise ValueError(
+                        "Each definition needs both a name and a regex fragment."
+                    )
+                if name in definitions:
+                    raise ValueError(f"Duplicate regex definition name: {name!r}.")
+                definitions[name] = fragment
+            validate_regex_definitions(definitions)
+        except ValueError as exc:
+            messagebox.showerror("Invalid regex definitions", str(exc), parent=parent)
+            return
+        status.set(f"Valid: {len(definitions)} definition(s).")
+
+    def _refresh_rewrite_system(self) -> None:
+        self.regex_rewrite_system = rewrite_system_from_gate_templates(
+            self.palette_templates,
+            self.palette_labels,
+            self.regex_definitions,
+        )
+
+    def open_regex_rewrite_editor(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Gate-menu rewrite rules")
+        dialog.transient(self.root)
+        dialog.geometry("900x720")
+        editor = ttk.Frame(dialog, padding=10)
+        editor.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            editor,
+            text=(
+                "These rules are generated from the loaded gate menu. Each gate "
+                "label is a function name; its input patterns and output templates "
+                "supply the ordered rewrite rules. This local inspector can validate "
+                "and evaluate rules, but the remote Obedience API solver does not "
+                "currently consume this rewrite system."
+            ),
+            wraplength=850,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        text_frame = ttk.Frame(editor)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+        text = tk.Text(text_frame, wrap=tk.NONE, height=24)
+        vertical = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=text.yview)
+        horizontal = ttk.Scrollbar(editor, orient=tk.HORIZONTAL, command=text.xview)
+        text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vertical.pack(side=tk.RIGHT, fill=tk.Y)
+        horizontal.pack(fill=tk.X)
+
+        starter = (
+            json.dumps(self.regex_rewrite_system.to_dict(), indent=2)
+            if self.regex_rewrite_system is not None
+            else json.dumps({"defs": {}, "functions": {}}, indent=2)
+        )
+        text.insert("1.0", starter)
+        text.configure(state=tk.DISABLED)
+
+        function_var = tk.StringVar(value="EVAL")
+        input_var = tk.StringVar()
+        result_var = tk.StringVar(
+            value="Rules come from the currently loaded gate menu."
+        )
+        controls = ttk.Frame(editor)
+        controls.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(controls, text="Function").pack(side=tk.LEFT)
+        ttk.Entry(controls, textvariable=function_var, width=14).pack(
+            side=tk.LEFT, padx=(4, 12)
+        )
+        ttk.Label(controls, text="Input").pack(side=tk.LEFT)
+        ttk.Entry(controls, textvariable=input_var).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=4
+        )
+
+        def current_system() -> RegexRewriteSystem:
+            if self.regex_rewrite_system is None:
+                raise RegexRewriteError(
+                    "Load a gate menu containing rewrite gates first."
+                )
+            return self.regex_rewrite_system
+
+        def validate_system() -> None:
+            try:
+                system = current_system()
+            except RegexRewriteError as exc:
+                messagebox.showerror("Invalid regex system", str(exc), parent=dialog)
+                return
+            result_var.set(
+                f"Valid: {len(system.functions)} function(s); regex definitions "
+                "are scoped to and embedded in their gate rules."
+            )
+
+        def evaluate_input() -> None:
+            try:
+                result = current_system().evaluate(
+                    function_var.get().strip(), input_var.get()
+                )
+            except (RegexRewriteError, RecursionError) as exc:
+                messagebox.showerror("Regex evaluation failed", str(exc), parent=dialog)
+                return
+            result_var.set(f"Result: {result}")
+
+        actions = ttk.Frame(editor)
+        actions.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(actions, text="Validate", command=validate_system).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(actions, text="Evaluate", command=evaluate_input).pack(
+            side=tk.LEFT, padx=4
+        )
+        ttk.Label(editor, textvariable=result_var, wraplength=850).pack(
+            anchor=tk.W, pady=(8, 0)
+        )
+
+    def _prepare_save_directory(self, directory: Path, description: str) -> bool:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror(
+                f"{description} directory unavailable", str(exc), parent=self.root
+            )
+            return False
+        return True
+
     def save_circuit_table(self) -> None:
+        if not self._prepare_save_directory(PATHWAYS_API_TABLE_DIR, "Table"):
+            return
         filename = filedialog.asksaveasfilename(
+            initialdir=str(PATHWAYS_API_TABLE_DIR),
             defaultextension=".json",
             filetypes=[("Truth tables", "*.json"), ("All files", "*")],
         )
@@ -1790,6 +2023,7 @@ class PathwaysApp:
             "rows": table.rows,
             "parameter_domains": table.parameter_domains,
             "parameter_positions": table.parameter_positions,
+            "regex_definitions": table.regex_definitions,
         }
         try:
             with open(filename, "w", encoding="utf-8") as stream:
@@ -1799,7 +2033,10 @@ class PathwaysApp:
             messagebox.showerror("Save table failed", str(exc), parent=self.root)
 
     def load_circuit_table(self) -> None:
+        if not self._prepare_save_directory(PATHWAYS_API_TABLE_DIR, "Table"):
+            return
         filename = filedialog.askopenfilename(
+            initialdir=str(PATHWAYS_API_TABLE_DIR),
             filetypes=[("Truth tables", "*.json"), ("All files", "*")],
         )
         if not filename:
@@ -1817,7 +2054,9 @@ class PathwaysApp:
                     str(column): int(position)
                     for column, position in payload.get("parameter_positions", {}).items()
                 },
+                payload.get("regex_definitions", {}),
             )
+            validate_regex_definition_entries(table.regex_definitions)
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             messagebox.showerror("Load table failed", str(exc), parent=self.root)
             return
@@ -1860,6 +2099,7 @@ class PathwaysApp:
             "rows": table.rows if table else [],
             "parameter_domains": table.parameter_domains if table else {},
             "parameter_positions": table.parameter_positions if table else {},
+            "regex_definitions": table.regex_definitions if table else {},
             "inputs": [
                 {"name": port.name, "column": port.column, "values": list(port.values or ())}
                 for port in node.inputs
@@ -1870,60 +2110,168 @@ class PathwaysApp:
             ],
         }
 
+    @staticmethod
+    def _validate_regex_tables(
+        tables: Sequence[TruthTable | None],
+        global_definitions: dict[str, str],
+    ) -> None:
+        for table in tables:
+            if table is None:
+                continue
+            effective = merge_regex_definitions(
+                global_definitions, table.regex_definitions
+            )
+            for row in table.rows:
+                for index, kind in enumerate(table.column_kinds):
+                    if (
+                        kind == "input"
+                        and index < len(row)
+                        and isinstance(row[index], str)
+                    ):
+                        validate_regex_pattern(row[index], effective)
+
+    def _new_gate_template_id(self) -> str:
+        while True:
+            self._gate_number += 1
+            node_id = f"gate_template_{self._gate_number}"
+            if node_id not in self.palette_templates:
+                return node_id
+
     def save_gate_menu(self) -> None:
+        if not self._prepare_save_directory(PATHWAYS_API_MENU_DIR, "Menu"):
+            return
         filename = filedialog.asksaveasfilename(
+            initialdir=str(PATHWAYS_API_MENU_DIR),
             defaultextension=".json",
             filetypes=[("Gate menus", "*.json"), ("All files", "*")],
         )
         if not filename:
             return
-        payload = [self._template_to_dict(node, self.palette_labels.get(node_id, node_id))
-                   for node_id, node in self.palette_templates.items()]
+        gates = [
+            self._template_to_dict(node, self.palette_labels.get(node_id, node_id))
+            for node_id, node in self.palette_templates.items()
+        ]
+        payload = {
+            "global_regex_definitions": self.regex_definitions,
+            "gates": gates,
+        }
         try:
             with open(filename, "w", encoding="utf-8") as stream:
                 json.dump(payload, stream, indent=2)
-            self.status.set(f"Saved {len(payload)} gate template(s).")
+            self.status.set(f"Saved {len(gates)} gate template(s).")
         except OSError as exc:
             messagebox.showerror("Save gate menu failed", str(exc), parent=self.root)
 
-    def load_gate_menu(self) -> None:
+    @staticmethod
+    def _read_gate_menu_document(
+        filename: str, global_definitions: dict[str, str] | None = None
+    ) -> tuple[dict[str, LogicNode], dict[str, str], dict[str, str] | None]:
+        with open(filename, "r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+        menu_definitions: dict[str, str] | None = None
+        if isinstance(payload, list):
+            gates = payload
+        elif isinstance(payload, dict):
+            gates = payload.get("gates")
+            menu_definitions = payload.get("global_regex_definitions", {})
+            validate_regex_definition_entries(menu_definitions)
+            if not isinstance(gates, list):
+                raise ValueError("A gate menu object must contain a 'gates' list.")
+        else:
+            raise ValueError("A gate menu file must contain a JSON list or object.")
+        effective_globals = merge_regex_definitions(
+            global_definitions, menu_definitions
+        )
+        templates: dict[str, LogicNode] = {}
+        labels: dict[str, str] = {}
+        for item in gates:
+            if not isinstance(item, dict):
+                raise ValueError("Each gate template must be a JSON object.")
+            node_id = str(item["node_id"])
+            if node_id in templates:
+                raise ValueError(f"Duplicate gate template ID {node_id!r}.")
+            table_definitions = item.get("regex_definitions", {})
+            validate_regex_definition_entries(table_definitions)
+            table = TruthTable(
+                [str(column) for column in item["columns"]],
+                item["rows"],
+                [str(kind) for kind in item["column_kinds"]],
+                {
+                    str(column): tuple(str(value) for value in values)
+                    for column, values in item.get("parameter_domains", {}).items()
+                },
+                {
+                    str(column): int(position)
+                    for column, position in item.get("parameter_positions", {}).items()
+                },
+                table_definitions,
+            )
+            definitions = merge_regex_definitions(
+                effective_globals, table_definitions
+            )
+            for row in table.rows:
+                for index, kind in enumerate(table.column_kinds):
+                    if (
+                        kind == "input"
+                        and index < len(row)
+                        and isinstance(row[index], str)
+                    ):
+                        validate_regex_pattern(row[index], definitions)
+            inputs = [
+                LogicPort(
+                    str(port["name"]), "input", port.get("column"),
+                    tuple(port.get("values") or ()),
+                )
+                for port in item.get("inputs", [])
+            ]
+            outputs = [
+                LogicPort(
+                    str(port["name"]), "output", port.get("column"),
+                    tuple(port.get("values") or ()),
+                )
+                for port in item.get("outputs", [])
+            ]
+            templates[node_id] = LogicNode(
+                node_id, "gate", table, inputs, outputs
+            )
+            labels[node_id] = str(item.get("label", node_id))
+        return templates, labels, menu_definitions
+
+    @staticmethod
+    def _read_gate_menu(
+        filename: str, global_definitions: dict[str, str] | None = None
+    ) -> tuple[dict[str, LogicNode], dict[str, str]]:
+        templates, labels, _menu_definitions = (
+            PathwaysApp._read_gate_menu_document(filename, global_definitions)
+        )
+        return templates, labels
+
+    def _choose_gate_menu(self) -> str | None:
+        if not self._prepare_save_directory(PATHWAYS_API_MENU_DIR, "Menu"):
+            return None
         filename = filedialog.askopenfilename(
+            initialdir=str(PATHWAYS_API_MENU_DIR),
             filetypes=[("Gate menus", "*.json"), ("All files", "*")],
         )
-        if not filename:
+        return filename or None
+
+    def load_gate_menu(self) -> None:
+        filename = self._choose_gate_menu()
+        if filename is None:
             return
         try:
-            with open(filename, "r", encoding="utf-8") as stream:
-                payload = json.load(stream)
-            if not isinstance(payload, list):
-                raise ValueError("A gate menu file must contain a JSON list.")
-            templates: dict[str, LogicNode] = {}
-            labels: dict[str, str] = {}
-            for item in payload:
-                if not isinstance(item, dict):
-                    raise ValueError("Each gate template must be a JSON object.")
-                node_id = str(item["node_id"])
-                columns = [str(column) for column in item["columns"]]
-                kinds = [str(kind) for kind in item["column_kinds"]]
-                table = TruthTable(
-                    columns, item["rows"], kinds,
-                    {
-                        str(column): tuple(str(value) for value in values)
-                        for column, values in item.get("parameter_domains", {}).items()
-                    },
-                    {
-                        str(column): int(position)
-                        for column, position in item.get("parameter_positions", {}).items()
-                    },
-                )
-                inputs = [LogicPort(str(port["name"]), "input", port.get("column"),
-                                    tuple(port.get("values") or ()))
-                          for port in item.get("inputs", [])]
-                outputs = [LogicPort(str(port["name"]), "output", port.get("column"),
-                                     tuple(port.get("values") or ()))
-                           for port in item.get("outputs", [])]
-                templates[node_id] = LogicNode(node_id, "gate", table, inputs, outputs)
-                labels[node_id] = str(item.get("label", node_id))
+            templates, labels, menu_definitions = self._read_gate_menu_document(
+                filename, self.regex_definitions
+            )
+            global_definitions = merge_regex_definitions(
+                self.regex_definitions, menu_definitions
+            )
+            self._validate_regex_tables(
+                [self.target_editor.get_table()]
+                + [node.truth_table for node in self.prescribed_graph.nodes.values()]
+                + [node.truth_table for node in templates.values()],
+                global_definitions,
+            )
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             messagebox.showerror("Load gate menu failed", str(exc), parent=self.root)
             return
@@ -1935,7 +2283,61 @@ class PathwaysApp:
         self.palette_labels.clear()
         for node_id, node in templates.items():
             self.register_gate_palette(node_id, node, labels[node_id])
-        self.status.set(f"Loaded {len(templates)} gate template(s).")
+        self.regex_definitions = global_definitions
+        self.prescribed_graph.regex_definitions = global_definitions.copy()
+        template_numbers = [
+            int(node_id[len("gate_template_"):])
+            for node_id in self.palette_templates
+            if node_id.startswith("gate_template_")
+            and node_id[len("gate_template_"):].isdigit()
+        ]
+        self._gate_number = max(
+            [self._gate_number, *template_numbers], default=self._gate_number
+        )
+        self._refresh_rewrite_system()
+        self.status.set(
+            f"Loaded {len(templates)} gate template(s) and "
+            f"{len(menu_definitions or {})} global regex definition(s)."
+        )
+
+    def import_gate_menu(self) -> None:
+        filename = self._choose_gate_menu()
+        if filename is None:
+            return
+        try:
+            templates, labels, menu_definitions = self._read_gate_menu_document(
+                filename, self.regex_definitions
+            )
+            global_definitions = merge_regex_definitions(
+                self.regex_definitions, menu_definitions
+            )
+            self._validate_regex_tables(
+                [self.target_editor.get_table()]
+                + [node.truth_table for node in self.prescribed_graph.nodes.values()]
+                + [node.truth_table for node in self.palette_templates.values()]
+                + [node.truth_table for node in templates.values()],
+                global_definitions,
+            )
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Import gate menu failed", str(exc), parent=self.root)
+            return
+
+        imported = 0
+        for node_id, node in templates.items():
+            imported_id = node_id
+            if imported_id in self.palette_templates:
+                imported_id = self._new_gate_template_id()
+                node.node_id = imported_id
+            self.register_gate_palette(imported_id, node, labels[node_id])
+            imported += 1
+        self.regex_definitions = global_definitions
+        self.prescribed_graph.regex_definitions = global_definitions.copy()
+        self._refresh_rewrite_system()
+        self.status.set(
+            f"Imported {imported} gate template(s) and "
+            f"{len(menu_definitions or {})} global regex definition(s) "
+            f"from {Path(filename).name}."
+        )
 
     def _show_gate_template_menu(self, event: tk.Event, node_id: str) -> None:
         menu = tk.Menu(self.root, tearoff=0)
@@ -1952,6 +2354,7 @@ class PathwaysApp:
             button.destroy()
         self.palette_templates.pop(node_id, None)
         self.palette_labels.pop(node_id, None)
+        self._refresh_rewrite_system()
         self.status.set("Deleted gate template; existing canvas gates were preserved.")
 
     def edit_gate_template(self, node_id: str) -> None:
@@ -2154,9 +2557,14 @@ class PathwaysApp:
                     column for column in input_columns
                     if column in node.truth_table.columns
                 ]
+                effective_definitions = merge_regex_definitions(
+                    self.regex_definitions,
+                    node.truth_table.regex_definitions,
+                )
                 for row_index in range(len(table.rows)):
                     arguments = tuple(values[row_index] for values in input_values)
                     result = None
+                    capture_bindings: dict[str, str] = {}
                     domain_violation = any(
                         node.truth_table.parameter_domains.get(column)
                         and arguments[input_columns.index(column)]
@@ -2176,10 +2584,65 @@ class PathwaysApp:
                             arguments[input_columns.index(column)]
                             for column in table_input_columns
                         )
-                        if table_arguments == argument_subset:
-                            result = gate_row[node.truth_table.columns.index(output_column)] if output_column in node.truth_table.columns else gate_row[-1]
+                        row_bindings: dict[str, str] = {}
+                        matches = True
+                        for pattern, value in zip(table_arguments, argument_subset):
+                            if (
+                                isinstance(pattern, str)
+                                and regex_string_body(pattern) is not None
+                                and value is not None
+                            ):
+                                matched = match_regex_pattern(
+                                    pattern,
+                                    str(value),
+                                    effective_definitions,
+                                )
+                                if matched is None:
+                                    matches = False
+                                    break
+                                row_bindings.update(matched)
+                            elif (
+                                isinstance(value, str)
+                                and regex_string_body(value) is not None
+                                and pattern is not None
+                            ):
+                                matched = match_regex_pattern(
+                                    value,
+                                    str(pattern),
+                                    effective_definitions,
+                                )
+                                if matched is None:
+                                    matches = False
+                                    break
+                                row_bindings.update(matched)
+                            elif pattern != value:
+                                matches = False
+                                break
+                        if matches:
+                            result = (
+                                gate_row[node.truth_table.columns.index(output_column)]
+                                if output_column in node.truth_table.columns
+                                else gate_row[-1]
+                            )
+                            capture_bindings = row_bindings
                             break
-                    result = render_output_template(result, input_columns, arguments)
+                    if (
+                        isinstance(result, str)
+                        and regex_string_body(result) is not None
+                    ):
+                        result = render_regex_template(
+                            result,
+                            capture_bindings,
+                            call_evaluator=(
+                                self.regex_rewrite_system.evaluate_text
+                                if self.regex_rewrite_system is not None
+                                else None
+                            ),
+                        )
+                    else:
+                        result = render_output_template(
+                            result, input_columns, arguments
+                        )
                     output_values.append(result)
                 node.outputs[0].values = tuple(output_values)
                 column_index = table.columns.index(output_column)
@@ -2281,6 +2744,30 @@ class PathwaysApp:
             text='Output templates: f"state={Input A}/{Input B}"  (use {Input Column} placeholders)',
             foreground="#53635a",
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        definitions_frame = ttk.LabelFrame(
+            form, text="Table regex definitions (JSON object)", padding=6
+        )
+        definitions_frame.grid(
+            row=6, column=0, columnspan=2, sticky="nsew", pady=(6, 4)
+        )
+        ttk.Label(
+            definitions_frame,
+            text=(
+                "Fragments are raw regex source; reference them with (?&name). "
+                "Table names override global names. Row captures stay inline "
+                "and local to that row. Use (?P<name>...) for a row capture "
+                "and \\g<name> in its output template; reusable definition names "
+                "must not be used as row capture names. Patterns match the whole "
+                "input cell."
+            ),
+            wraplength=520,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 4))
+        definitions_text = tk.Text(definitions_frame, height=5, wrap=tk.NONE, undo=True)
+        definitions_text.pack(fill=tk.BOTH, expand=True)
+        definitions_text.insert(
+            "1.0", json.dumps(initial_table.regex_definitions, indent=2)
+        )
 
         def sync_parameter_domains() -> None:
             table = gate_editor.get_table()
@@ -2353,6 +2840,27 @@ class PathwaysApp:
                 messagebox.showerror("Invalid gate", "Input ports must be a number.", parent=dialog)
                 return
             table = gate_editor.get_table()
+            try:
+                table.regex_definitions = json.loads(
+                    definitions_text.get("1.0", tk.END)
+                )
+                validate_regex_definition_entries(table.regex_definitions)
+                effective_definitions = merge_regex_definitions(
+                    self.regex_definitions, table.regex_definitions
+                )
+                for row in table.rows:
+                    for index, kind in enumerate(table.column_kinds):
+                        if (
+                            kind == "input"
+                            and index < len(row)
+                            and isinstance(row[index], str)
+                        ):
+                            validate_regex_pattern(row[index], effective_definitions)
+            except (json.JSONDecodeError, ValueError) as exc:
+                messagebox.showerror(
+                    "Invalid regex definitions or pattern", str(exc), parent=dialog
+                )
+                return
             input_indices = [
                 index for index, kind in enumerate(table.column_kinds)
                 if kind == "input"
@@ -2450,7 +2958,7 @@ class PathwaysApp:
                 inputs.append(LogicPort(column, "input", column, values))
             output_column = table.columns[-1] if table.columns else None
             output_values = tuple(row[-1] for row in table.rows) if output_column else None
-            new_template_id = editing_template_id or f"gate_template_{self._gate_number + 1}"
+            new_template_id = editing_template_id or self._new_gate_template_id()
             updated_template = LogicNode(
                 new_template_id, "gate", table,
                 inputs, [LogicPort(output_column, "output", output_column, output_values)]
@@ -2468,17 +2976,16 @@ class PathwaysApp:
                     original.outputs = updated_template.outputs
                     self.editor_canvas.view(editing_template_id).label = label
             else:
-                self._gate_number += 1
-                new_template_id = f"gate_template_{self._gate_number}"
-                updated_template.node_id = new_template_id
                 self.register_gate_palette(new_template_id, updated_template, label)
+            self._refresh_rewrite_system()
             self.sync_terminal_nodes()
             dialog.destroy()
 
-        ttk.Button(form, text="Save gate" if editing else "Create gate", command=create).grid(row=6, column=1, sticky="e")
+        ttk.Button(form, text="Save gate" if editing else "Create gate", command=create).grid(row=7, column=1, sticky="e")
         form.columnconfigure(1, weight=1)
         form.rowconfigure(2, weight=1)
-        dialog.geometry("560x430")
+        form.rowconfigure(6, weight=1)
+        dialog.geometry("600x650")
 
     def randomize_gate_table(self, editor: TableEditor, parent: tk.Misc) -> None:
         radix = simpledialog.askinteger(
@@ -2537,17 +3044,35 @@ class PathwaysApp:
         target_name: str,
     ) -> None:
         if window.closed or not window.winfo_exists():
+            try:
+                while True:
+                    event, _payload = result_queue.get_nowait()
+                    if event in {"done", "error", "cancelled"}:
+                        self.request_in_flight = False
+                        return
+            except queue.Empty:
+                pass
+            self.root.after(
+                50, self._poll_solver_results, result_queue, window, target_name
+            )
             return
         try:
             while True:
                 event, payload = result_queue.get_nowait()
                 if event == "solution" and isinstance(payload, LogicGraph):
                     window.add_solution(payload)
-                    self.status.set(f"Found a scenario for {target_name}; press Resume solver to continue.")
+                elif event == "cancelled":
+                    self.request_in_flight = False
+                    return
                 elif event == "done":
                     self.request_in_flight = False
-                    window.mark_finished()
-                    self.status.set(f"Found the next solution for {target_name}.")
+                    window.mark_request_complete(bool(payload))
+                    if payload:
+                        self.status.set(
+                            f"Found a scenario for {target_name}; press Resume solver to continue."
+                        )
+                    else:
+                        self.status.set(f"No more solutions found for {target_name}.")
                     return
                 elif event == "error":
                     self.request_in_flight = False
@@ -2560,11 +3085,19 @@ class PathwaysApp:
 
 
     @staticmethod
-    def _table_payload(table: TruthTable) -> dict[str, object]:
+    def _table_payload(
+        table: TruthTable,
+        global_regex_definitions: dict[str, str] | None = None,
+    ) -> dict[str, object]:
         return {
             "columns": table.columns.copy(),
             "column_kinds": table.column_kinds.copy(),
             "rows": [row.copy() for row in table.rows],
+            "regex_definitions": table.regex_definitions.copy(),
+            "global_regex_definitions": (
+                global_regex_definitions.copy()
+                if global_regex_definitions is not None else {}
+            ),
             "parameter_domains": {
                 column: list(values)
                 for column, values in table.parameter_domains.items()
@@ -2574,7 +3107,9 @@ class PathwaysApp:
 
     def _standard_parts_payload(self) -> dict[str, dict[str, object]]:
         return {
-            self.palette_labels.get(node_id, node_id): self._table_payload(node.truth_table)
+            self.palette_labels.get(node_id, node_id): self._table_payload(
+                node.truth_table, self.regex_definitions
+            )
             for node_id, node in self.palette_templates.items()
             if node.truth_table is not None
         }
@@ -2587,6 +3122,7 @@ class PathwaysApp:
         graph = LogicGraph(
             pairing_loss=[float(value) for value in payload.get("pairing_loss", [])],
             pairing_labels=[str(value) for value in payload.get("pairing_labels", [])],
+            regex_definitions=circuit.regex_definitions.copy(),
         )
         circuit_values = {
             column: tuple(row[index] for row in circuit.rows)
@@ -2657,6 +3193,18 @@ class PathwaysApp:
                 parent=self.root,
             )
             return
+        try:
+            self._validate_regex_tables(
+                [self.target_editor.get_table()]
+                + [node.truth_table for node in self.prescribed_graph.nodes.values()]
+                + [node.truth_table for node in self.palette_templates.values()],
+                self.regex_definitions,
+            )
+            self.sync_terminal_nodes()
+            self._refresh_rewrite_system()
+        except (ValueError, RegexRewriteError) as exc:
+            messagebox.showerror("Solve failed", str(exc), parent=self.root)
+            return
         target = self.target_editor.get_table()
         output_columns = [
             column for column, kind in zip(target.columns, target.column_kinds)
@@ -2684,32 +3232,58 @@ class PathwaysApp:
             [column for _, column, _ in selected_columns],
             [[row[index] for index, _, _ in selected_columns] for row in target.rows],
             [kind for _, _, kind in selected_columns],
+            regex_definitions=target.regex_definitions.copy(),
         )
-        result_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
-        stop_event = threading.Event()
         window = self.solution_window
         if window is None or window.closed or not window.winfo_exists():
             window = OutputWindow(
                 self.root,
                 target,
                 self.prescribed_graph.clone(),
-                on_resume=lambda: None,
-                on_close=stop_event.set,
             )
             self.solution_window = window
+        standard_parts = self._standard_parts_payload()
+        window.on_resume = lambda: self._request_next_solution(
+            solver_target,
+            standard_parts,
+            window,
+            selected_target,
+            imvolution_mode,
+        )
+        self._request_next_solution(
+            solver_target,
+            standard_parts,
+            window,
+            selected_target,
+            imvolution_mode,
+        )
+
+    def _request_next_solution(
+        self,
+        target: TruthTable,
+        standard_parts: dict[str, dict[str, object]],
+        window: OutputWindow,
+        target_name: str,
+        imvolution_mode: str,
+    ) -> None:
+        if self.request_in_flight or window.closed or not window.winfo_exists():
+            return
+        result_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
+        stop_event = threading.Event()
+        window.on_close = stop_event.set
         self.request_in_flight = True
         self.status.set(
-            f"Solving target {selected_target} with {imvolution_mode}; "
+            f"Solving target {target_name} with {imvolution_mode}; "
             "waiting for the Obedience API."
         )
         worker = threading.Thread(
             target=self._run_api_solver,
-            args=(solver_target, self._standard_parts_payload(), result_queue,
+            args=(target, standard_parts, result_queue,
                   stop_event, imvolution_mode),
             daemon=True,
         )
         worker.start()
-        self._poll_solver_results(result_queue, window, selected_target)
+        self._poll_solver_results(result_queue, window, target_name)
 
     def _run_api_solver(
         self,
@@ -2722,7 +3296,9 @@ class PathwaysApp:
         try:
             job_id = self.api_client.submit_job({
                 "operation": "solve",
-                "circuit": self._table_payload(target),
+                "circuit": self._table_payload(
+                    target, self.regex_definitions
+                ),
                 "standard_parts": standard_parts,
                 "imvolution_mode": imvolution_mode,
                 "iteration_limit": 1000,
@@ -2731,20 +3307,28 @@ class PathwaysApp:
             })
             status = self.api_client.wait_for_job(job_id)
             if stop_event.is_set():
+                result_queue.put(("cancelled", None))
                 return
             if status.error:
                 raise RuntimeError(status.error)
-            solutions = (status.result or {}).get("solutions", [])
+            result = status.result or {}
+            solutions = result.get("solutions", [])
             for solution in solutions:
                 if stop_event.is_set():
+                    result_queue.put(("cancelled", None))
                     return
                 result_queue.put(("solution", self._graph_from_api_payload(solution, target)))
-            result_queue.put(("done", None))
+            result_queue.put(("done", bool(result.get("has_more", False))))
         except (ObedienceApiError, TimeoutError, ValueError, RuntimeError) as exc:
-            result_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+            if stop_event.is_set():
+                result_queue.put(("cancelled", None))
+            else:
+                result_queue.put(("error", f"{type(exc).__name__}: {exc}"))
 
     def reset(self) -> None:
-        self.prescribed_graph = LogicGraph()
+        self.prescribed_graph = LogicGraph(
+            regex_definitions=self.regex_definitions.copy()
+        )
         self.editor_canvas.graph = self.prescribed_graph
         self.editor_canvas.views = {}
         self.sync_terminal_nodes()
