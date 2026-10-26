@@ -128,23 +128,15 @@ status = client.wait_for_job(job_id)
 print(status.status, status.result, status.error)
 ```
 
-To generate a demo key, use `client.generate_api_key()` and save the returned
-value immediately; the API displays it only once.
+To generate a demo key, open the deployed API's home page (for example,
+`https://obedience-api.vercel.app`) and click **Generate API key**. Copy and
+save the returned value immediately: it is displayed only once. The same
+operation is available through `client.generate_api_key()`, or by sending an
+unauthenticated `POST` request to `/api/v1/keys`.
 
-Runnable example:
-
-```powershell
-$env:OBEDIENCE_API_KEY = "YOUR_API_KEY"
-python .\examples\use_api.py
-```
-
-The example submits the AND-gate payload above and waits for the local solver
-worker to return a result. To generate a new demo key through the public
-endpoint instead, run:
-
-```powershell
-python .\examples\use_api.py --generate-key
-```
+The key is a client credential. Send it as a bearer token when submitting jobs
+or checking their status; do not commit it to source control or share it. It is
+different from `WORKER_AUTH_TOKEN`, which is used only by solver workers.
 
 The reusable Python client does not accept a Vercel protection bypass. Deploy
 the public API without Vercel Deployment Protection, or expose a public
@@ -153,17 +145,52 @@ internal testing only and should not be distributed to library users.
 
 ## API-backed pathway UI
 
-The repository also contains a standalone Tkinter UI clone:
+The repository contains a Tkinter UI example at
+`examples/pathways_api.py`. From the `obedience-api` directory, install the
+project package and its dependencies into the Python environment you intend to
+use:
 
 ```powershell
-$env:OBEDIENCE_API_KEY = "YOUR_API_KEY"
-python .\examples\pathways_api.py
+python -m pip install -e .
+python -m pip install regex
 ```
 
-It imports the public client and non-sensitive data models from
-`obedience_api.py`. It does not import the private
-`pathways.py`, `solver_worker.py`, or solver implementation. Each Solve click
-requests one candidate solution.
+The UI example also uses the private project's shared UI/regex modules
+(`regex_cells.py` and `regex_rewrite.py`). Run it from the main project root
+with both project directories on `PYTHONPATH`:
+
+```powershell
+# Run these commands from the main project root (the directory containing
+# pathways_prod.py, regex_cells.py, and the obedience-api folder).
+$env:PYTHONPATH = "$((Get-Location).Path);$((Get-Location).Path)\obedience-api"
+$env:OBEDIENCE_API_URL = "https://obedience-api.vercel.app"
+$env:OBEDIENCE_API_KEY = "PASTE_YOUR_API_KEY_HERE"
+python .\obedience-api\examples\pathways_api.py
+```
+
+Replace the example URL if you deployed the API elsewhere. The `OBEDIENCE_API_KEY`
+is the one-time key generated on the API home page, not the worker token. These
+environment variables apply to the current PowerShell window; launch the UI
+from that same window. Avoid putting the key directly in a script or committing
+it to a `.env` file.
+
+The API stores submitted jobs as `queued`; a solver worker must be running to
+process them. Start the API worker in a **second PowerShell window**, from the
+main project root:
+
+```powershell
+$env:OBEDIENCE_API_URL = "https://obedience-api.vercel.app"
+python .\obedience-api\scripts\solver_api_worker.py `
+  --solver-path .\solver_worker.py `
+  --env-file .\obedience-api\.env.local
+```
+
+That environment file must define `WORKER_AUTH_TOKEN` matching the deployed
+API's worker token. If the deployment uses Vercel Deployment Protection, it
+may also need `VERCEL_AUTOMATION_BYPASS_SECRET` in that file. Do not paste or
+commit either secret. The worker token is not the API key used by the UI.
+Keep this worker process running while using the UI. Each Solve click requests
+one candidate; use **Resume solver** to request the next one.
 
 ## Demo job client
 
