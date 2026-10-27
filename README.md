@@ -174,23 +174,97 @@ environment variables apply to the current PowerShell window; launch the UI
 from that same window. Avoid putting the key directly in a script or committing
 it to a `.env` file.
 
-The API stores submitted jobs as `queued`; a solver worker must be running to
-process them. Start the API worker in a **second PowerShell window**, from the
-main project root:
+Submitted jobs remain queued until the API deployment's configured solver
+service processes them. Each Solve click requests one candidate; use
+**Resume solver** to request the next one.
 
-```powershell
-$env:OBEDIENCE_API_URL = "https://obedience-api.vercel.app"
-python .\obedience-api\scripts\solver_api_worker.py `
-  --solver-path .\solver_worker.py `
-  --env-file .\obedience-api\.env.local
+## Regex tutorial for gate menus
+
+The pathway UI lets gate tables match structured text, capture parts of that
+text, and reuse the captured values in outputs. Regex patterns and templates
+are entered as raw-regex cells: write `r"..."` around the expression. The `r`
+prefix is part of the cell syntax, not part of the regular expression. Input
+patterns must match the complete input value, not just a substring.
+
+### Match and capture values
+
+For example, a gate input cell can match a `radius: 12` value and capture the
+digits as `radius`:
+
+```text
+r"radius:\s*(?P<radius>\d+)"
 ```
 
-That environment file must define `WORKER_AUTH_TOKEN` matching the deployed
-API's worker token. If the deployment uses Vercel Deployment Protection, it
-may also need `VERCEL_AUTOMATION_BYPASS_SECRET` in that file. Do not paste or
-commit either secret. The worker token is not the API key used by the UI.
-Keep this worker process running while using the UI. Each Solve click requests
-one candidate; use **Resume solver** to request the next one.
+`(?P<radius>...)` is a named capture group; `\d+` matches one or more digits.
+The corresponding output cell can refer to the capture with `\g<radius>`:
+
+```text
+r"measured radius = \g<radius>"
+```
+
+When the input is `radius: 12`, the output template renders as
+`measured radius = 12`. Use the same capture name in the input and output.
+Capture names must not shadow a reusable global regex definition.
+
+### Reuse regex fragments with global definitions
+
+Use **Regex definitions** in the UI for fragments shared by multiple gates.
+Enter the fragment itself as the value (without an `r"..."` wrapper). For
+example, define `integer` as:
+
+```regex
+\d+
+```
+
+Then a gate pattern can refer to it with the regex subroutine syntax
+`(?&integer)`:
+
+```text
+r"radius:\s*(?P<radius>(?&integer))"
+```
+
+Global definitions are included in a saved gate-menu JSON file under
+`global_regex_definitions`. Loading that menu makes the definitions available
+to its gate tables. A table may also have its own `regex_definitions`; those
+table-level entries override global definitions with the same name.
+
+### Recursive definitions
+
+The `regex` package used by the UI supports recursive named definitions.
+They are useful for nested expressions such as parentheses. Define both
+fragments in **Regex definitions**:
+
+```text
+term = \d+|\(\s*(?&expr)\s*\)
+expr = (?&term)(?:\s*[-+*/]\s*(?&term))?
+```
+
+Then use `(?&expr)` in a raw-regex cell, for example:
+
+```text
+r"(?V1)(?P<value>(?&expr))"
+```
+
+`(?V1)` enables the regex package's enhanced syntax in that pattern. The
+definition references are recursive: `expr` can contain terms, and a `term`
+can be a parenthesized expression. Keep reusable definitions in the global
+definition editor or in the gate menu's global definitions so they are
+available when the menu is loaded.
+
+### Validate and troubleshoot
+
+1. Add or import the global definitions before using patterns that reference
+   them.
+2. Put complete matching expressions in input cells and use named captures
+   for values needed in outputs.
+3. Put `\g<name>` references in raw-regex output templates.
+4. Use **Validate** in the regex-definition editor and load the gate menu to
+   catch malformed patterns or missing definitions before solving.
+
+An error such as `invalid group reference` or `unknown group` commonly means
+the referenced definition is not in scope, has a different name, or has a
+syntax error. A pattern capture and a global definition must also use different
+names.
 
 ## Demo job client
 
@@ -221,53 +295,6 @@ Set-Content `
 
 The script does not store the API key. Jobs remain `queued` until a worker is
 connected to process them.
-
-## Local solver workers
-
-The private solver remains outside this repository. The local worker adapter
-expects the sibling `solver_worker.py` by default and calls its
-`solve_payload(payload)` function. If `.env.local` exists (for example after
-`vercel env pull .env.local --environment=production`), the worker loads it
-automatically. Otherwise set `NAPIQ_DATABASE_URL` (or `DATABASE_URL`) in the
-shell where the worker runs.
-
-```powershell
-python .\scripts\neon_solver_worker.py --once
-```
-
-Use a different environment file with `--env-file`. Existing environment
-variables take precedence over values in the file.
-
-Run continuously while testing:
-
-```powershell
-python .\scripts\neon_solver_worker.py
-```
-
-To use a different solver location:
-
-```powershell
-python .\scripts\neon_solver_worker.py `
-  --solver-path "C:\path\to\solver_worker.py"
-```
-
-The direct adapter claims jobs with PostgreSQL row locking, marks them
-`running`, calls the private solver, and records either the JSON result as
-`completed` or the exception as `failed`. Use `--once` first so failures are
-easy to inspect. It requires the Neon URL locally.
-
-For the REST architecture, use `solver_api_worker.py` instead. It calls the
-deployed API and does not need `NAPIQ_DATABASE_URL`. The API URL defaults to
-`https://obedience-api.vercel.app`; `WORKER_AUTH_TOKEN` is loaded from the
-repository's `.env.local` by default:
-
-```powershell
-python .\scripts\solver_api_worker.py `
-  --api-url "https://obedience-api.vercel.app" `
-  --solver-path "C:\path\to\solver_worker.py" `
-  --env-file ".\.env.local" `
-  --once
-```
 
 ## Local validation
 

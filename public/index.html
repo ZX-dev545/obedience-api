@@ -1,77 +1,192 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Obedience API Demo</title>
-    <style>
-      :root {
-        color-scheme: dark;
-        font-family: system-ui, sans-serif;
-        background: #10131a;
-        color: #f5f7fb;
-      }
-      body { margin: 0; }
-      main { max-width: 680px; margin: 12vh auto; padding: 2rem; }
-      .card { background: #191e29; border: 1px solid #30384a; border-radius: 16px; padding: 2rem; }
-      h1 { margin-top: 0; }
-      p { color: #b8c1d4; line-height: 1.6; }
-      button { border: 0; border-radius: 8px; padding: .8rem 1.1rem; background: #7c5cff; color: white; font-weight: 700; cursor: pointer; }
-      button:disabled { cursor: wait; opacity: .65; }
-      code { display: block; overflow-wrap: anywhere; margin: 1rem 0; padding: 1rem; border-radius: 8px; background: #0c0f14; color: #c8f7d2; }
-      [hidden] { display: none; }
-      .warning { font-size: .9rem; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <section class="card">
-        <h1>Obedience API</h1>
-        <p>Generate a demo API key to submit jobs to the Obedience API.</p>
-        <p class="warning">This key is shown only once. Copy it before leaving this page.</p>
-        <button id="generate" type="button">Generate API key</button>
-        <div id="result" hidden>
-          <p>Your demo API key:</p>
-          <code id="key"></code>
-          <button id="copy" type="button">Copy API key</button>
-        </div>
-        <p id="error" role="alert" hidden></p>
-      </section>
-    </main>
-    <script>
-      const generate = document.querySelector("#generate");
-      const result = document.querySelector("#result");
-      const key = document.querySelector("#key");
-      const copy = document.querySelector("#copy");
-      const error = document.querySelector("#error");
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Obedience API: describe the behaviour you want and the parts you have, and it infers how to put them together.">
+<title>Obedience API</title>
+<style>
 
-      generate.addEventListener("click", async () => {
-        generate.disabled = true;
-        error.hidden = true;
-        try {
-          const response = await fetch("/api/v1/keys", { method: "POST" });
-          const responseText = await response.text();
-          let body;
-          try {
-            body = JSON.parse(responseText);
-          } catch {
-            throw new Error(`Server returned ${response.status}: ${responseText.slice(0, 200)}`);
-          }
-          if (!response.ok) throw new Error(body.error || "Unable to generate an API key.");
-          key.textContent = body.api_key;
-          result.hidden = false;
-          generate.hidden = true;
-        } catch (cause) {
-          error.textContent = cause.message;
-          error.hidden = false;
-          generate.disabled = false;
-        }
-      });
+body{margin:0}
+.pg{box-sizing:border-box;min-height:100vh;background:#10131C;color:#E8EAF0;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif}
+.w{max-width:1120px;margin:0 auto;padding:0 32px}
+.mono{font-family:ui-monospace,Consolas,Menlo,monospace}
+.lab{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:#B7A4FF;font-weight:600;margin:0}
+.hero{padding:56px 0 96px}
+.hero h1{max-width:920px;text-wrap:balance;margin:16px 0 28px;font-size:68px;line-height:1.03;letter-spacing:-2px;color:#FFF;font-weight:700}
+.lede{margin:0;font-size:20px;line-height:1.6;color:#B4BBCB;max-width:540px}
+.dev{max-width:680px;margin:0 0 56px;padding:18px 22px;background:#1A1E2B;border:1px solid #2B3142;border-radius:10px;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:14px;line-height:1.7;color:#B4BBCB}
+.dev b{display:block;margin-bottom:6px;font-weight:600;color:#B7A4FF}
+.act{display:flex;flex-wrap:wrap;gap:12px;margin-top:40px}
+.btn{min-height:48px;box-sizing:border-box;padding:0 22px;display:inline-flex;align-items:center;border-radius:10px;font-size:16px;text-decoration:none;border:1px solid #3A4260;color:#B7A4FF;background:transparent}
+.btn.p{border:0;background:#6D45EA;color:#FFF;font-weight:700;cursor:pointer;font-family:inherit}
+.note{margin:32px 0 0;max-width:560px;border-left:2px solid #6D45EA;padding:4px 0 4px 20px;font-size:15px;line-height:1.6;color:#B4BBCB}
+.note b{color:#FFF}
+.sec{border-top:1px solid #2B3142;padding:96px 0 40px;display:grid;grid-template-columns:4fr 8fr;gap:64px}
+.sec h2{margin:12px 0 16px;font-size:36px;line-height:1.1;letter-spacing:-.8px;color:#FFF}
+.sec p{margin:0 0 14px;font-size:17px;line-height:1.65;color:#B4BBCB}
+.parts{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px}
+.parts span{font-size:13px;padding:4px 10px;border:1px solid #3A4260;border-radius:999px;color:#E8EAF0}
+.sc{overflow-x:auto}
+table.t{border-collapse:collapse;font-size:14px;color:#E8EAF0}
+.t th{padding:8px 18px 8px 0;border-bottom:1px solid #3A4260;text-align:left;color:#B4BBCB;font-weight:500}
+.t td{padding:7px 18px 7px 0;white-space:nowrap}
+.t .o{color:#B7A4FF}
+.vid{grid-column:1 / -1;margin-top:48px}
+.vid video{display:block;width:100%;max-width:880px;border-radius:10px;background:#0B0D14}
+.vid p{font-size:14px;line-height:1.5;color:#B4BBCB;margin:12px 0 0;max-width:880px}
+.res{margin-top:36px}
+.res h3{margin:0 0 12px;font-size:15px;color:#FFF;font-weight:600}
+.qs{border-top:1px solid #2B3142;padding:96px 0 40px}
+.qs h2{margin:12px 0 48px;font-size:36px;letter-spacing:-.8px;color:#FFF}
+.st{display:grid;grid-template-columns:96px 4fr 8fr;gap:32px;padding:32px 0;border-top:1px solid #2B3142;align-items:start}
+.n{font-size:48px;line-height:1;color:#6D45EA;font-weight:700;letter-spacing:-1px}
+.st h3{margin:6px 0 8px;font-size:20px;color:#FFF}
+.st p{margin:0;font-size:16px;line-height:1.6;color:#B4BBCB}
+pre{margin:0;padding:18px 20px;background:#0B0D14;border-radius:10px;overflow-x:auto;font-size:14px;line-height:1.65;color:#E8EAF0}
+code{font-family:ui-monospace,Consolas,Menlo,monospace;color:#E8EAF0}
+.ep{display:grid;grid-template-columns:4fr 8fr;gap:64px;border-top:1px solid #2B3142;padding:96px 0 40px}
+.ep h2{margin:12px 0 0;font-size:36px;letter-spacing:-.8px;color:#FFF}
+.row{display:flex;gap:24px;padding:16px 0;border-bottom:1px solid #2B3142;font-size:15px;color:#B4BBCB}
+.row .mono{flex:0 0 260px;color:#E8EAF0}
+.ft{border-top:1px solid #2B3142;padding:48px 0 96px;font-size:14px;color:#B4BBCB;display:flex;gap:24px;flex-wrap:wrap}
+a{color:#B7A4FF}a:hover{color:#FFF}
+@media (max-width:820px){ .sec,.ep{grid-template-columns:1fr;gap:32px} .hero h1{font-size:44px} .st{grid-template-columns:1fr} .row{flex-direction:column;gap:4px} }
 
-      copy.addEventListener("click", async () => {
-        await navigator.clipboard.writeText(key.textContent);
-        copy.textContent = "Copied";
-      });
-    </script>
-  </body>
+[hidden]{display:none !important}
+.keybox{margin-top:28px;max-width:680px}
+.keybox p{margin:0 0 10px;font-size:15px;color:#B4BBCB}
+.keybox code{display:block;overflow-wrap:anywhere;margin:0 0 14px;padding:16px 18px;border-radius:10px;background:#0B0D14;color:#C8F7D2;font-size:14px;line-height:1.6}
+.err{margin:20px 0 0;max-width:680px;color:#FFB4B4;font-size:15px}
+.btn:disabled{cursor:wait;opacity:.65}
+</style>
+</head>
+<body>
+<div class="pg"><div class="w">
+
+<header class="hero">
+<div>
+<p class="dev"><b>// dev note</b>I’ve been working on Obedience as a side project, and this is an early MVP, not a finished product. I’m putting it out as a prototype for people to try and tell me what they think, so you’re a tester here, not a paying customer. Expect rough edges, things changing, and the odd job sitting in the queue when my solver isn’t running. Demo keys are free for now. If something breaks or you have an idea, let me know on GitHub.</p>
+<p class="lab">Obedience API</p>
+<h1>Describe the behaviour. Get the mechanism.</h1>
+<p class="lede">Obedience uses symbolic reasoning to build what you describe. Give it examples of the behaviour you want and the parts you have to work with, and it rapidly infers how to put them together.</p>
+<div class="act">
+<button id="generate" class="btn p" type="button">Generate API key</button>
+<a class="btn" href="https://github.com/ZX-dev545/obedience-api">View on GitHub</a>
+<a class="btn" href="https://github.com/ZX-dev545/obedience-api/archive/refs/heads/main.zip">Download client</a>
+</div>
+<div id="result" class="keybox" hidden>
+<p>Your demo API key:</p>
+<code id="key"></code>
+<button id="copy" class="btn p" type="button">Copy API key</button>
+</div>
+<p id="error" class="err" role="alert" hidden></p>
+<p class="note"><b>Your key is shown once.</b> Copy it before leaving the page. Demo keys are free for now.</p>
+</div>
+</header>
+
+<section class="sec">
+<div>
+<p class="lab">Example 01</p>
+<h2>A logic circuit</h2>
+<p>Behaviour goes in as labelled rows. Here that's all eight, though any sample of rows you care about works.</p>
+<p>In words, OUT is on when B is off and, if A is on, C is on.</p>
+<div class="parts mono"><span>NOT</span><span>AND</span><span>XOR</span></div>
+</div>
+<div class="sc">
+<table class="t mono"><thead><tr><th>A</th><th>B</th><th>C</th><th class="o">OUT</th></tr></thead><tbody>
+<tr><td>0</td><td>0</td><td>0</td><td class="o">1</td></tr>
+<tr><td>0</td><td>0</td><td>1</td><td class="o">1</td></tr>
+<tr><td>0</td><td>1</td><td>0</td><td class="o">0</td></tr>
+<tr><td>0</td><td>1</td><td>1</td><td class="o">0</td></tr>
+<tr><td>1</td><td>0</td><td>0</td><td class="o">0</td></tr>
+<tr><td>1</td><td>0</td><td>1</td><td class="o">1</td></tr>
+<tr><td>1</td><td>1</td><td>0</td><td class="o">0</td></tr>
+<tr><td>1</td><td>1</td><td>1</td><td class="o">0</td></tr>
+</tbody></table>
+</div>
+<div class="vid">
+<video controls preload="metadata" playsinline src="t1-circuit.mp4" aria-label="An empty circuit prescription beside the completed circuit the solver produces for it"></video>
+<p>The empty prescription, with inputs and an output and nothing wired, beside the circuit the solver completes for it. In this recording the result appears within a fraction of a second of pressing Solve.</p>
+</div>
+</section>
+
+<section class="sec">
+<div>
+<p class="lab">Example 02</p>
+<h2>A gear train</h2>
+<p>The same format describes parts that aren't logic gates. Each row gives a gear's position, radius and angle going in, and the state wanted out.</p>
+<p>The menu holds a 2gear part, plus the arithmetic parts it is defined with.</p>
+</div>
+<div class="sc">
+<table class="t mono"><thead><tr><th>A</th><th class="o">OUT</th></tr></thead><tbody>
+<tr><td>pos: 0, radius: 1, theta: 14</td><td class="o">pos: 7, radius: (?P&lt;a&gt;.*?), theta: 7</td></tr>
+<tr><td>pos: 0, radius: 1, theta: 8</td><td class="o">pos: 7, radius: (?P&lt;a&gt;.*?), theta: 4</td></tr>
+<tr><td>pos: 0, radius: 1, theta: 4</td><td class="o">pos: 7, radius: (?P&lt;a&gt;.*?), theta: 2</td></tr>
+<tr><td>pos: 0, radius: 1, theta: 2</td><td class="o">pos: 7, radius: (?P&lt;a&gt;.*?), theta: 1</td></tr>
+</tbody></table>
+<div class="res">
+<h3>Solver result: two 2gear parts in series</h3>
+<table class="t mono"><thead><tr><th>After 2gear</th><th class="o">After 2gear again</th></tr></thead><tbody>
+<tr><td>pos: 3, radius: 2, theta: 7</td><td class="o">pos: 7, radius: 2, theta: 7</td></tr>
+<tr><td>pos: 3, radius: 2, theta: 4</td><td class="o">pos: 7, radius: 2, theta: 4</td></tr>
+<tr><td>pos: 3, radius: 2, theta: 2</td><td class="o">pos: 7, radius: 2, theta: 2</td></tr>
+<tr><td>pos: 3, radius: 2, theta: 1</td><td class="o">pos: 7, radius: 2, theta: 1</td></tr>
+</tbody></table>
+</div>
+</div>
+<div class="vid">
+<video controls preload="metadata" playsinline src="t12-mechanism.mp4" aria-label="The solved gear mechanism, stepped through the four example rows"></video>
+<p>The solved mechanism, stepped through each example row: a source gear drives two generated gears to the target shaft.</p>
+</div>
+</section>
+
+<section class="qs">
+<p class="lab">Quickstart</p>
+<h2>Three steps</h2>
+<div class="st"><div class="n">1</div><div><h3>Install the client</h3><p>It has no dependencies.</p></div>
+<pre class="mono">pip install git+https://github.com/ZX-dev545/obedience-api</pre></div>
+<div class="st"><div class="n">2</div><div><h3>Generate a key, then submit</h3><p>Use the button at the top of the page, then send a job and wait for it.</p></div>
+<pre class="mono">from obedience_api import ObedienceApiClient
+
+client = ObedienceApiClient(
+    "https://obedience-api.vercel.app",
+    api_key="YOUR_API_KEY",
+)
+job_id = client.submit_job(job)
+status = client.wait_for_job(job_id)
+print(status.status, status.result, status.error)</pre></div>
+<div class="st"><div class="n">3</div><div><h3>Read the status</h3><p>Jobs stay queued while no solver is online. The request format is in the <a href="https://github.com/ZX-dev545/obedience-api#request-shape">README</a>.</p></div>
+<pre class="mono">queued | running | completed | failed</pre></div>
+</section>
+
+<section class="ep">
+<div><p class="lab">Reference</p><h2>Endpoints</h2></div>
+<div>
+<div class="row"><span class="mono">POST /api/v1/keys</span><span>Generate a demo key. No authentication.</span></div>
+<div class="row"><span class="mono">POST /api/v1/jobs</span><span>Submit a job. Send the key as a bearer token.</span></div>
+<div class="row"><span class="mono">GET /api/v1/jobs/{job_id}</span><span>Status and result of a job.</span></div>
+</div>
+</section>
+
+<footer class="ft"><span>Obedience API</span><a href="https://github.com/ZX-dev545/obedience-api">GitHub</a><span>Demo keys are free for now.</span></footer>
+
+</div></div>
+<script>
+const generate=document.querySelector("#generate"),result=document.querySelector("#result"),key=document.querySelector("#key"),copy=document.querySelector("#copy"),error=document.querySelector("#error");
+generate.addEventListener("click",async()=>{
+  generate.disabled=true;error.hidden=true;
+  try{
+    const response=await fetch("/api/v1/keys",{method:"POST"});
+    const responseText=await response.text();
+    let body;
+    try{body=JSON.parse(responseText);}catch{throw new Error(`Server returned ${response.status}: ${responseText.slice(0,200)}`);}
+    if(!response.ok)throw new Error(body.error||"Unable to generate an API key.");
+    key.textContent=body.api_key;result.hidden=false;generate.hidden=true;
+  }catch(cause){error.textContent=cause.message;error.hidden=false;generate.disabled=false;}
+});
+copy.addEventListener("click",async()=>{await navigator.clipboard.writeText(key.textContent);copy.textContent="Copied";});
+</script>
+</body>
 </html>
